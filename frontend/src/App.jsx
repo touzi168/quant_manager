@@ -7,6 +7,7 @@ import AdminDashboard from './pages/AdminDashboard';
 import StrategyDetail from './pages/StrategyDetail';
 import AdminUsers from './pages/AdminUsers';
 import AdminPermissions from './pages/AdminPermissions';
+import AdminStrategies from './pages/AdminStrategies';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children, requireAdmin = false }) {
@@ -65,6 +66,16 @@ function App() {
             <PrivateRoute requireAdmin>
               <Layout>
                 <AdminPermissions />
+              </Layout>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/admin/strategies"
+          element={
+            <PrivateRoute requireAdmin>
+              <Layout>
+                <AdminStrategies />
               </Layout>
             </PrivateRoute>
           }

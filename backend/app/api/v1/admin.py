@@ -18,10 +18,48 @@ class AssignPermissionRequest(BaseModel):
     user_id: int
     permission_type: str
 
+class CreateStrategyRequest(BaseModel):
+    name: str
+    exchange: Optional[str] = None
+    account_email: str
+    is_main: Optional[int] = None
+    is_unified: Optional[int] = None
+    is_active: Optional[bool] = True
+    strategy: Optional[str] = None
+    offset: Optional[str] = None
+    host: Optional[str] = None
+    period: Optional[str] = None
+    trade_type: Optional[str] = None
+    min_found: Optional[int] = None
+    days: Optional[int] = None
+    hedge_sell: Optional[int] = None
+    api_key: Optional[str] = None
+    secret: Optional[str] = None
+    description: Optional[str] = None
+
+class UpdateStrategyRequest(BaseModel):
+    name: Optional[str] = None
+    exchange: Optional[str] = None
+    account_email: Optional[str] = None
+    is_main: Optional[int] = None
+    is_unified: Optional[int] = None
+    is_active: Optional[bool] = None
+    strategy: Optional[str] = None
+    offset: Optional[str] = None
+    host: Optional[str] = None
+    period: Optional[str] = None
+    trade_type: Optional[str] = None
+    min_found: Optional[int] = None
+    days: Optional[int] = None
+    hedge_sell: Optional[int] = None
+    api_key: Optional[str] = None
+    secret: Optional[str] = None
+    description: Optional[str] = None
+
 @router.get("/users")
 async def get_users(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=1000),
     search: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_admin_user)
 ):
@@ -175,21 +213,252 @@ async def delete_user(user_id: int, current_user: dict = Depends(get_current_adm
 async def get_strategies(current_user: dict = Depends(get_current_admin_user)):
     """获取策略列表"""
     strategies = execute_query(
-        "SELECT id, name, description, account_email, is_active, created_at, updated_at FROM strategies ORDER BY created_at DESC"
+        """SELECT id, name, exchange, account_email, is_main, is_unified, is_active, 
+           strategy, `offset`, host, period, trade_type, min_found, days, hedge_sell, 
+           api_key, secret, description, created_at, updated_at 
+           FROM strategies ORDER BY created_at DESC"""
     )
     
     return success_response([
         {
             "id": s["id"],
             "name": s["name"],
-            "description": s["description"],
+            "exchange": s["exchange"],
             "accountEmail": s["account_email"],
+            "isMain": s["is_main"],
+            "isUnified": s["is_unified"],
             "isActive": s["is_active"],
+            "strategy": s["strategy"],
+            "offset": s["offset"],
+            "host": s["host"],
+            "period": s["period"],
+            "tradeType": s["trade_type"],
+            "minFound": s["min_found"],
+            "days": s["days"],
+            "hedgeSell": s["hedge_sell"],
+            "apiKey": s["api_key"],
+            "secret": s["secret"],
+            "description": s["description"],
             "createdAt": s["created_at"].isoformat() if s["created_at"] else None,
             "updatedAt": s["updated_at"].isoformat() if s["updated_at"] else None
         }
         for s in strategies
     ])
+
+@router.get("/strategies/{strategy_id}")
+async def get_strategy(strategy_id: int, current_user: dict = Depends(get_current_admin_user)):
+    """获取策略详情"""
+    strategies = execute_query(
+        """SELECT id, name, exchange, account_email, is_main, is_unified, is_active, 
+           strategy, `offset`, host, period, trade_type, min_found, days, hedge_sell, 
+           api_key, secret, description, created_at, updated_at 
+           FROM strategies WHERE id = %s""",
+        (strategy_id,)
+    )
+    
+    if not strategies:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="策略不存在"
+        )
+    
+    s = strategies[0]
+    return success_response({
+        "id": s["id"],
+        "name": s["name"],
+        "exchange": s["exchange"],
+        "accountEmail": s["account_email"],
+        "isMain": s["is_main"],
+        "isUnified": s["is_unified"],
+        "isActive": s["is_active"],
+        "strategy": s["strategy"],
+        "offset": s["offset"],
+        "host": s["host"],
+        "period": s["period"],
+        "tradeType": s["trade_type"],
+        "minFound": s["min_found"],
+        "days": s["days"],
+        "hedgeSell": s["hedge_sell"],
+        "apiKey": s["api_key"],
+        "secret": s["secret"],
+        "description": s["description"],
+        "createdAt": s["created_at"].isoformat() if s["created_at"] else None,
+        "updatedAt": s["updated_at"].isoformat() if s["updated_at"] else None
+    })
+
+@router.post("/strategies")
+async def create_strategy(request: CreateStrategyRequest, current_user: dict = Depends(get_current_admin_user)):
+    """创建策略"""
+    # 验证exchange枚举值
+    if request.exchange and request.exchange not in ["binance", "okex"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="交易所必须是binance或okex"
+        )
+    
+    # 验证trade_type枚举值
+    if request.trade_type and request.trade_type not in ["swap", "spot", "mixed"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="交易类型必须是swap、spot或mixed"
+        )
+    
+    # 检查account_email是否已存在
+    existing = execute_query(
+        "SELECT id FROM strategies WHERE account_email = %s",
+        (request.account_email,)
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该账户邮箱已存在，不可重复"
+        )
+    
+    # 插入新策略
+    execute_update(
+        """INSERT INTO strategies 
+           (name, exchange, account_email, is_main, is_unified, is_active, strategy, 
+            `offset`, host, period, trade_type, min_found, days, hedge_sell, api_key, 
+            secret, description) 
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (
+            request.name,
+            request.exchange,
+            request.account_email,
+            request.is_main,
+            request.is_unified,
+            request.is_active if request.is_active is not None else True,
+            request.strategy,
+            request.offset,
+            request.host,
+            request.period,
+            request.trade_type,
+            request.min_found,
+            request.days,
+            request.hedge_sell,
+            request.api_key,
+            request.secret,
+            request.description
+        )
+    )
+    
+    return success_response(None, "策略创建成功")
+
+@router.put("/strategies/{strategy_id}")
+async def update_strategy(strategy_id: int, request: UpdateStrategyRequest, current_user: dict = Depends(get_current_admin_user)):
+    """更新策略"""
+    # 检查策略是否存在
+    strategies = execute_query("SELECT id FROM strategies WHERE id = %s", (strategy_id,))
+    if not strategies:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="策略不存在"
+        )
+    
+    # 验证exchange枚举值
+    if request.exchange and request.exchange not in ["binance", "okex"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="交易所必须是binance或okex"
+        )
+    
+    # 验证trade_type枚举值
+    if request.trade_type and request.trade_type not in ["swap", "spot", "mixed"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="交易类型必须是swap、spot或mixed"
+        )
+    
+    # 如果更新account_email，检查是否重复
+    if request.account_email:
+        existing = execute_query(
+            "SELECT id FROM strategies WHERE account_email = %s AND id != %s",
+            (request.account_email, strategy_id)
+        )
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="该账户邮箱已存在，不可重复"
+            )
+    
+    # 构建更新语句
+    updates = []
+    params = []
+    
+    if request.name is not None:
+        updates.append("name = %s")
+        params.append(request.name)
+    if request.exchange is not None:
+        updates.append("exchange = %s")
+        params.append(request.exchange)
+    if request.account_email is not None:
+        updates.append("account_email = %s")
+        params.append(request.account_email)
+    if request.is_main is not None:
+        updates.append("is_main = %s")
+        params.append(request.is_main)
+    if request.is_unified is not None:
+        updates.append("is_unified = %s")
+        params.append(request.is_unified)
+    if request.is_active is not None:
+        updates.append("is_active = %s")
+        params.append(request.is_active)
+    if request.strategy is not None:
+        updates.append("strategy = %s")
+        params.append(request.strategy)
+    if request.offset is not None:
+        updates.append("`offset` = %s")
+        params.append(request.offset)
+    if request.host is not None:
+        updates.append("host = %s")
+        params.append(request.host)
+    if request.period is not None:
+        updates.append("period = %s")
+        params.append(request.period)
+    if request.trade_type is not None:
+        updates.append("trade_type = %s")
+        params.append(request.trade_type)
+    if request.min_found is not None:
+        updates.append("min_found = %s")
+        params.append(request.min_found)
+    if request.days is not None:
+        updates.append("days = %s")
+        params.append(request.days)
+    if request.hedge_sell is not None:
+        updates.append("hedge_sell = %s")
+        params.append(request.hedge_sell)
+    if request.api_key is not None:
+        updates.append("api_key = %s")
+        params.append(request.api_key)
+    if request.secret is not None:
+        updates.append("secret = %s")
+        params.append(request.secret)
+    if request.description is not None:
+        updates.append("description = %s")
+        params.append(request.description)
+    
+    if updates:
+        params.append(strategy_id)
+        sql = f"UPDATE strategies SET {', '.join(updates)} WHERE id = %s"
+        execute_update(sql, tuple(params))
+    
+    return success_response(None, "策略更新成功")
+
+@router.delete("/strategies/{strategy_id}")
+async def delete_strategy(strategy_id: int, current_user: dict = Depends(get_current_admin_user)):
+    """删除策略"""
+    # 检查策略是否存在
+    strategies = execute_query("SELECT id FROM strategies WHERE id = %s", (strategy_id,))
+    if not strategies:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="策略不存在"
+        )
+    
+    # 删除策略（级联删除相关权限）
+    execute_update("DELETE FROM strategies WHERE id = %s", (strategy_id,))
+    
+    return success_response(None, "策略删除成功")
 
 @router.get("/strategies/{strategy_id}/users")
 async def get_strategy_users(strategy_id: int, current_user: dict = Depends(get_current_admin_user)):

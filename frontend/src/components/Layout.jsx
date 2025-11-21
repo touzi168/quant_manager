@@ -9,6 +9,7 @@ import {
   TeamOutlined,
   SafetyOutlined,
   BarChartOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons';
 import { useSelector, useDispatch } from 'react-redux';
 import { logout } from '../store/slices/authSlice';
@@ -47,6 +48,12 @@ function Layout({ children }) {
       key: '/admin/permissions',
       icon: <SafetyOutlined />,
       label: '权限管理',
+      show: isAdmin,
+    },
+    {
+      key: '/admin/strategies',
+      icon: <AppstoreOutlined />,
+      label: '策略管理',
       show: isAdmin,
     },
   ].filter((item) => item.show);

@@ -6,7 +6,9 @@ import uvicorn
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.redis_client import init_redis
-from app.api.v1 import auth, users, admin, dashboard
+from app.api.v1 import auth, users, admin
+from app.api.v1.dashboard import admin_router as admin_dashboard_router, user_router as user_dashboard_router
+from app.middleware.timing import TimingMiddleware
 from app.utils.logger import logger
 
 @asynccontextmanager
@@ -43,12 +45,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 请求耗时中间件
+app.add_middleware(TimingMiddleware)
+
 # 注册路由
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
 app.include_router(users.router, prefix="/api/users", tags=["用户"])
 app.include_router(admin.router, prefix="/api/admin", tags=["管理员"])
-app.include_router(dashboard.router, prefix="/api/user/dashboard", tags=["用户仪表板"])
-app.include_router(dashboard.router, prefix="/api/admin/dashboard", tags=["管理员仪表板"])
+app.include_router(user_dashboard_router, prefix="/api")
+app.include_router(admin_dashboard_router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
@@ -72,10 +77,50 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 if __name__ == "__main__":
+    # 配置uvicorn日志，禁用默认访问日志（使用我们的中间件日志）
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
+            "access": {
+                "format": "%(message)s",  # 简化访问日志格式，由我们的中间件处理
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            "uvicorn": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "uvicorn.error": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "uvicorn.access": {
+                "handlers": [],  # 禁用uvicorn的默认访问日志
+                "level": "INFO",
+                "propagate": False,
+            },
+        },
+    }
+    
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=6666,
-        reload=True
+        reload=True,
+        log_config=log_config
     )
 

@@ -2,11 +2,17 @@ from passlib.context import CryptContext
 from typing import Tuple, List
 import re
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# 使用 pbkdf2_sha256 避免 bcrypt 后端兼容问题
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"],
+    deprecated="auto",
+)
+
 
 def hash_password(password: str) -> str:
     """哈希密码"""
     return pwd_context.hash(password)
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """验证密码"""

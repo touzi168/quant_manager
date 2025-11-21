@@ -1,4 +1,4 @@
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.utils.jwt import verify_token
 from app.core.redis_client import redis_exists
@@ -7,7 +7,8 @@ from typing import Optional
 
 security = HTTPBearer()
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = security):
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """获取当前用户"""
     token = credentials.credentials
     
@@ -54,7 +55,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = security)
         "role": user["role"]
     }
 
-async def get_current_admin_user(current_user: dict = None):
+async def get_current_admin_user(current_user: dict = Depends(get_current_user)):
     """获取当前管理员用户"""
     if current_user is None:
         raise HTTPException(

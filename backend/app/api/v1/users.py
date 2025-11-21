@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
+from typing import Optional
 from app.core.database import execute_query, execute_update
 from app.core.redis_client import redis_delete
 from app.utils.response import success_response, error_response
@@ -8,6 +9,7 @@ from app.middleware.auth import get_current_user
 from app.utils.logger import logger
 
 router = APIRouter()
+
 
 class UpdateProfileRequest(BaseModel):
     nickname: Optional[str] = None

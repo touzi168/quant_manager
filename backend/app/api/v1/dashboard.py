@@ -9,13 +9,19 @@ from app.services.data_aggregation import (
     get_equity_curve,
     get_health_status,
     get_process_status,
-    get_strategy_summary
+    get_strategy_summary,
+    get_asset_overview,
+    get_period_pnl,
+    get_asset_distribution,
+    get_equity_curve_with_drawdown,
+    get_hosts_status
 )
 from app.utils.logger import logger
 
-router = APIRouter()
+admin_router = APIRouter(prefix="/admin/dashboard", tags=["管理员仪表板"])
+user_router = APIRouter(prefix="/user/dashboard", tags=["用户仪表板"])
 
-@router.get("/admin/dashboard/summary")
+@admin_router.get("/summary")
 async def admin_summary(current_user: dict = Depends(get_current_admin_user)):
     """总体数据汇总（管理员）"""
     try:
@@ -50,7 +56,7 @@ async def admin_summary(current_user: dict = Depends(get_current_admin_user)):
             detail="获取数据失败"
         )
 
-@router.get("/admin/dashboard/asset-summary")
+@admin_router.get("/asset-summary")
 async def admin_asset_summary(current_user: dict = Depends(get_current_admin_user)):
     """资产汇总（管理员）"""
     try:
@@ -63,7 +69,7 @@ async def admin_asset_summary(current_user: dict = Depends(get_current_admin_use
             detail="获取资产汇总失败"
         )
 
-@router.get("/admin/dashboard/position-summary")
+@admin_router.get("/position-summary")
 async def admin_position_summary(current_user: dict = Depends(get_current_admin_user)):
     """持仓汇总（管理员）"""
     try:
@@ -76,7 +82,7 @@ async def admin_position_summary(current_user: dict = Depends(get_current_admin_
             detail="获取持仓汇总失败"
         )
 
-@router.get("/admin/dashboard/equity-curve")
+@admin_router.get("/equity-curve")
 async def admin_equity_curve(
     time_range: str = Query("30d", alias="timeRange"),
     current_user: dict = Depends(get_current_admin_user)
@@ -125,7 +131,7 @@ async def admin_equity_curve(
             detail="获取资金曲线失败"
         )
 
-@router.get("/admin/dashboard/health-status")
+@admin_router.get("/health-status")
 async def admin_health_status(current_user: dict = Depends(get_current_admin_user)):
     """服务器健康状态（管理员）"""
     try:
@@ -138,7 +144,7 @@ async def admin_health_status(current_user: dict = Depends(get_current_admin_use
             detail="获取健康状态失败"
         )
 
-@router.get("/admin/dashboard/process-status")
+@admin_router.get("/process-status")
 async def admin_process_status(current_user: dict = Depends(get_current_admin_user)):
     """进程健康状态（管理员）"""
     try:
@@ -151,7 +157,81 @@ async def admin_process_status(current_user: dict = Depends(get_current_admin_us
             detail="获取进程状态失败"
         )
 
-@router.get("/user/dashboard/strategies")
+@admin_router.get("/asset-overview")
+async def admin_asset_overview(current_user: dict = Depends(get_current_admin_user)):
+    """获取资产总览（管理员）"""
+    try:
+        overview = await get_asset_overview()
+        return success_response(overview)
+    except Exception as e:
+        logger.error(f"获取资产总览失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取资产总览失败"
+        )
+
+@admin_router.get("/period-pnl")
+async def admin_period_pnl(
+    period: str = Query("day", regex="^(day|week|month)$"),
+    limit: int = Query(30, ge=1, le=30),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """获取周期盈亏统计（管理员）"""
+    try:
+        pnl_data = await get_period_pnl(period, limit)
+        return success_response(pnl_data)
+    except Exception as e:
+        logger.error(f"获取周期盈亏失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取周期盈亏失败"
+        )
+
+@admin_router.get("/asset-distribution")
+async def admin_asset_distribution(current_user: dict = Depends(get_current_admin_user)):
+    """获取资产分布（管理员）"""
+    try:
+        distribution = await get_asset_distribution()
+        return success_response(distribution)
+    except Exception as e:
+        logger.error(f"获取资产分布失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取资产分布失败"
+        )
+
+@admin_router.get("/equity-curve-drawdown")
+async def admin_equity_curve_drawdown(
+    time_range: str = Query("30d", alias="timeRange"),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """获取资金曲线和最大回撤（管理员）
+    time_range: 时间范围，如 7d, 30d, 60d, 120d, 180d, 1y, 2y, 3y, 5y, 10y
+    """
+    try:
+        curve_data = await get_equity_curve_with_drawdown(time_range)
+        return success_response(curve_data)
+    except Exception as e:
+        logger.error(f"获取资金曲线失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取资金曲线失败"
+        )
+
+@admin_router.get("/hosts-status")
+async def admin_hosts_status(current_user: dict = Depends(get_current_admin_user)):
+    """获取服务器状态（管理员）"""
+    try:
+        hosts = await get_hosts_status()
+        return success_response(hosts)
+    except Exception as e:
+        logger.error(f"获取服务器状态失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="获取服务器状态失败"
+        )
+
+@user_router.get("/strategies")
 async def user_strategies(current_user: dict = Depends(get_current_user)):
     """可访问策略列表"""
     try:
@@ -187,7 +267,7 @@ async def user_strategies(current_user: dict = Depends(get_current_user)):
             detail="获取策略列表失败"
         )
 
-@router.get("/user/dashboard/summary/{strategy_id}")
+@user_router.get("/summary/{strategy_id}")
 async def user_strategy_summary(
     strategy_id: int = Path(...),
     current_user: dict = Depends(get_current_user)
@@ -213,7 +293,7 @@ async def user_strategy_summary(
             detail="获取策略汇总失败"
         )
 
-@router.get("/user/dashboard/assets/{strategy_id}")
+@user_router.get("/assets/{strategy_id}")
 async def user_strategy_assets(
     strategy_id: int = Path(...),
     current_user: dict = Depends(get_current_user)
@@ -238,7 +318,7 @@ async def user_strategy_assets(
             detail="获取策略资产失败"
         )
 
-@router.get("/user/dashboard/positions/{strategy_id}")
+@user_router.get("/positions/{strategy_id}")
 async def user_strategy_positions(
     strategy_id: int = Path(...),
     current_user: dict = Depends(get_current_user)
@@ -263,7 +343,7 @@ async def user_strategy_positions(
             detail="获取策略持仓失败"
         )
 
-@router.get("/user/dashboard/equity/{strategy_id}")
+@user_router.get("/equity/{strategy_id}")
 async def user_strategy_equity(
     strategy_id: int = Path(...),
     time_range: str = Query("30d", alias="timeRange"),
@@ -303,7 +383,7 @@ async def user_strategy_equity(
             detail="获取资金曲线失败"
         )
 
-@router.get("/user/dashboard/health/{strategy_id}")
+@user_router.get("/health/{strategy_id}")
 async def user_strategy_health(
     strategy_id: int = Path(...),
     current_user: dict = Depends(get_current_user)
@@ -343,3 +423,4 @@ async def user_strategy_health(
             detail="获取健康状态失败"
         )
 
+__all__ = ["admin_router", "user_router"]

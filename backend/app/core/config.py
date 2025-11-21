@@ -1,9 +1,11 @@
 from pydantic_settings import BaseSettings
+from pydantic import Field
 from typing import List
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 class Settings(BaseSettings):
     # 应用配置
@@ -39,17 +41,30 @@ class Settings(BaseSettings):
     # Google Authenticator
     GOOGLE_AUTH_ISSUER: str = os.getenv("GOOGLE_AUTH_ISSUER", "量化监控系统")
     
-    # CORS配置
-    _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:7777,http://127.0.0.1:7777")
-    CORS_ORIGINS: List[str] = [origin.strip() for origin in _cors_origins.split(",")]
+    # CORS配置（逗号分隔字符串）
+    CORS_ORIGINS_RAW: str = Field(
+        default="http://localhost:7777,http://127.0.0.1:7777",
+        alias="CORS_ORIGINS"
+    )
     
     # 日志配置
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_FILE: str = os.getenv("LOG_FILE", "./logs/app.log")
     
+    # 默认管理员密码
+    ADMIN_DEFAULT_PASSWORD: str = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin@123456")
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
+
+    @property
+    def CORS_ORIGINS(self) -> List[str]:
+        raw = (self.CORS_ORIGINS_RAW or "").strip()
+        if not raw:
+            return []
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
 
 settings = Settings()
 

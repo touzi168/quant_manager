@@ -1,52 +1,6 @@
 version: '3.8'
 
 services:
-  # 后端服务
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "6666:6666"
-    environment:
-      - NODE_ENV=production
-      - DB_HOST=mariadb
-      - DB_PORT=3306
-      - DB_NAME=bquant
-      - DB_USER=test
-      - DB_PASSWORD=test
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-    depends_on:
-      - mariadb
-      - redis
-    volumes:
-      - ./backend/logs:/app/logs
-    restart: unless-stopped
-
-  # 前端服务
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "7777:80"
-    depends_on:
-      - backend
-    restart: unless-stopped
-
-  # MariaDB数据库
-  mariadb:
-    image: mariadb:10.8
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: bquant
-    volumes:
-      - mariadb_data:/var/lib/mysql
-    ports:
-      - "3306:3306"
-    restart: unless-stopped
-
   # Redis缓存
   redis:
     image: redis:7-alpine
@@ -57,6 +11,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  mariadb_data:
   redis_data:
 

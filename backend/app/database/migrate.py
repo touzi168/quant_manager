@@ -74,13 +74,27 @@ def create_tables():
             CREATE TABLE IF NOT EXISTS strategies (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(100) NOT NULL COMMENT '策略名称',
-                description TEXT COMMENT '策略描述',
+                exchange VARCHAR(255) NULL DEFAULT NULL,
                 account_email VARCHAR(255) NOT NULL COMMENT '关联的交易所账户',
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_account_email (account_email),
-                INDEX idx_name (name)
+                is_main INT(11) NULL DEFAULT NULL,
+                is_unified INT(11) NULL DEFAULT NULL,
+                is_active TINYINT(1) NULL DEFAULT 1,
+                strategy CHAR(50) NULL DEFAULT NULL,
+                `offset` VARCHAR(50) NULL DEFAULT NULL,
+                host CHAR(50) NULL DEFAULT NULL,
+                period CHAR(50) NULL DEFAULT NULL,
+                trade_type CHAR(50) NULL DEFAULT NULL,
+                min_found INT(11) NULL DEFAULT NULL,
+                days INT(11) NULL DEFAULT NULL,
+                hedge_sell INT(11) NULL DEFAULT NULL,
+                api_key VARCHAR(255) NULL DEFAULT NULL,
+                secret VARCHAR(255) NULL DEFAULT NULL,
+                description TEXT NULL DEFAULT NULL COMMENT '策略描述',
+                created_at TIMESTAMP NULL DEFAULT current_timestamp(),
+                updated_at TIMESTAMP NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+                UNIQUE KEY unique_account_email (account_email),
+                INDEX idx_account_email (account_email) USING BTREE,
+                INDEX idx_name (name) USING BTREE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略表'
         """)
         logger.info("✓ 策略表创建成功")
