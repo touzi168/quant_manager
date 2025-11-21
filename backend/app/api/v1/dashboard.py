@@ -18,8 +18,8 @@ from app.services.data_aggregation import (
 )
 from app.utils.logger import logger
 
-admin_router = APIRouter(prefix="/admin/dashboard", tags=["管理员仪表板"])
-user_router = APIRouter(prefix="/user/dashboard", tags=["用户仪表板"])
+admin_router = APIRouter(prefix="/admin/dashboard", tags=["管理员面板"])
+user_router = APIRouter(prefix="/user/dashboard", tags=["用户面板"])
 
 @admin_router.get("/summary")
 async def admin_summary(current_user: dict = Depends(get_current_admin_user)):

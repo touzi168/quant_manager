@@ -21,23 +21,8 @@ function Register() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      }}
-    >
-      <Card
-        title={
-          <div style={{ textAlign: 'center', fontSize: 24, fontWeight: 'bold' }}>
-            用户注册
-          </div>
-        }
-        style={{ width: 400 }}
-      >
+    <div className="auth-wrapper">
+      <Card className="auth-card" title={<div className="auth-title">用户注册</div>}>
         <Form
           form={form}
           name="register"
@@ -119,7 +104,7 @@ function Register() {
             </Button>
           </Form.Item>
 
-          <div style={{ textAlign: 'center', marginTop: 16 }}>
+          <div className="auth-links">
             <Link to="/login">已有账号？立即登录</Link>
           </div>
         </Form>

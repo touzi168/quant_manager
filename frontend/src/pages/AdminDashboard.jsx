@@ -17,13 +17,28 @@ function AdminDashboard() {
   const [assetDistribution, setAssetDistribution] = useState([]);
   const [period, setPeriod] = useState('day');
   // 资金曲线相关状态
-  const [timeWindow, setTimeWindow] = useState('30d'); // 时间窗口：7d, 30d, 60d, 120d, 180d, 1y, 2y, 3y, 5y, 10y
+  const [timeWindow, setTimeWindow] = useState('30d'); // 时间窗口：7d, 30d, 60d, 90d, 120d, 180d, 1y, 2y, 3y, 5y, 10y
   const [showCurves, setShowCurves] = useState({
-    floatingAssets: true,  // 浮动资产
-    totalAssets: false,    // 总资产
-    maxDrawdown: true,     // 最大回撤
+    floatingAssets: true,   // 浮动资产（净值）
+    totalAssets: false,     // 总资产（净值）
+    rawFloatingAssets: false, // 原始浮动资产
+    maxDrawdown: true,      // 最大回撤
   });
   
+  const formatLargeNumber = (value) => {
+    const absValue = Math.abs(value);
+    if (absValue >= 1_0000_0000) {
+      return `${(value / 1_0000_0000).toFixed(2)}亿`;
+    }
+    if (absValue >= 1_0000) {
+      return `${(value / 1_0000).toFixed(2)}万`;
+    }
+    if (absValue >= 1_000) {
+      return `${(value / 1_000).toFixed(2)}千`;
+    }
+    return value.toFixed(2);
+  };
+
   // 布局配置
   const [layout, setLayout] = useState(() => {
     const saved = localStorage.getItem('adminDashboardLayout');
@@ -61,6 +76,18 @@ function AdminDashboard() {
     // 保存布局到localStorage
     localStorage.setItem('adminDashboardLayout', JSON.stringify(layout));
   }, [layout]);
+
+  const updateEquityCurveState = (data, { preservePreviousOnEmpty = false } = {}) => {
+    setEquityCurve(prev => {
+      if (Array.isArray(data) && data.length > 0) {
+        return data;
+      }
+      if (preservePreviousOnEmpty && prev && prev.length > 0) {
+        return prev;
+      }
+      return [];
+    });
+  };
 
   const fetchAllData = async () => {
     try {
@@ -133,10 +160,12 @@ function AdminDashboard() {
       const response = await api.get(`/admin/dashboard/equity-curve-drawdown?timeRange=${timeWindow}`);
       console.log('资金曲线数据响应:', response.data);
       if (response.data.success) {
-        setEquityCurve(response.data.data || []);
+        updateEquityCurveState(response.data.data || []);
         console.log('资金曲线数据已设置，数据量:', response.data.data?.length || 0);
       } else {
         console.warn('获取资金曲线失败: 响应未成功', response.data);
+        updateEquityCurveState([], { preservePreviousOnEmpty: true });
+        message.warning('最新资金曲线返回为空，已保留上一份数据');
       }
     } catch (error) {
       console.error('获取资金曲线失败:', error);
@@ -145,8 +174,8 @@ function AdminDashboard() {
         response: error.response?.data,
         status: error.response?.status,
       });
-      // 设置空数组，避免显示"暂无数据"时一直显示
-      setEquityCurve([]);
+      updateEquityCurveState([], { preservePreviousOnEmpty: true });
+      message.error('获取资金曲线失败，展示上一次数据');
     }
   };
 
@@ -222,6 +251,7 @@ function AdminDashboard() {
       '7d': 7,
       '30d': 30,
       '60d': 60,
+      '90d': 90,
       '120d': 120,
       '180d': 180,  // 半年
       '1y': 365,
@@ -290,6 +320,17 @@ function AdminDashboard() {
     return drawdowns;
   };
 
+  const handleLegendSelectChange = (params) => {
+    if (!params || !params.selected) return;
+    const selected = params.selected;
+    setShowCurves({
+      floatingAssets: !!selected['浮动资产(净值)'],
+      totalAssets: !!selected['总资产(净值)'],
+      rawFloatingAssets: !!selected['原始浮动资产'],
+      maxDrawdown: !!selected['最大回撤'],
+    });
+  };
+
   // 资金曲线图表配置
   const getEquityCurveOption = () => {
     // 基础配置函数
@@ -344,6 +385,7 @@ function AdminDashboard() {
     const times = filteredData.map(item => item.time || '').filter(Boolean);
     const netUnrealized = filteredData.map(item => parseFloat(item.netUnrealized) || 0);
     const netRealized = filteredData.map(item => parseFloat(item.netRealized) || 0);
+    const rawUnrealizedValues = [...netUnrealized];
 
     // 2. 按基金净值法计算收益（以窗口开始时的值为基准）
     const baseUnrealized = netUnrealized[0] || 1;
@@ -362,66 +404,16 @@ function AdminDashboard() {
     // 使用浮动资产的净值来计算回撤
     const maxDrawdown = calculateWindowDrawdownFromNav(navUnrealizedValues);
 
-    // 4. 构建图例数据
-    const legendData = [];
-    if (showCurves.floatingAssets) legendData.push('浮动资产');
-    if (showCurves.totalAssets) legendData.push('总资产');
-    if (showCurves.maxDrawdown) legendData.push('最大回撤');
+    // 4. 构建图例配置
+    const legendItems = ['浮动资产(净值)', '总资产(净值)', '原始浮动资产', '最大回撤'];
+    const legendSelection = {
+      '浮动资产(净值)': showCurves.floatingAssets,
+      '总资产(净值)': showCurves.totalAssets,
+      '原始浮动资产': showCurves.rawFloatingAssets,
+      '最大回撤': showCurves.maxDrawdown,
+    };
 
-    // 如果没有选中任何曲线，显示提示
-    if (legendData.length === 0) {
-      return getBaseOption('请至少选择一条曲线显示');
-    }
-
-    // 5. 构建系列数据
-    const series = [];
-    if (showCurves.floatingAssets) {
-      series.push({
-        name: '浮动资产',
-        type: 'line',
-        yAxisIndex: 0,
-        data: navUnrealizedValues,
-        smooth: true,
-        itemStyle: { color: '#1890ff' },
-      });
-    }
-    if (showCurves.totalAssets) {
-      series.push({
-        name: '总资产',
-        type: 'line',
-        yAxisIndex: 0,
-        data: navRealizedValues,
-        smooth: true,
-        itemStyle: { color: '#52c41a' },
-      });
-    }
-    if (showCurves.maxDrawdown) {
-      series.push({
-        name: '最大回撤',
-        type: 'line',
-        yAxisIndex: 1,
-        data: maxDrawdown,
-        smooth: true,
-        // 线条样式：浅色细线
-        lineStyle: { 
-          width: 1,
-          color: 'rgba(255, 77, 79, 0.5)',
-        },
-        // 数据点样式：不显示或浅色
-        itemStyle: { 
-          color: 'rgba(255, 77, 79, 0.5)',
-        },
-        // 填充区域：浅红色半透明
-        areaStyle: {
-          color: 'rgba(255, 77, 79, 0.15)', // 浅红色填充
-        },
-        // 确保填充从0轴开始（对于负值，会自动从数据点向上填充到0）
-        symbol: 'none', // 不显示数据点
-        symbolSize: 0,
-      });
-    }
-
-    // 6. 计算y轴范围（自动适应）
+    // 5. 计算y轴范围（自动适应）
     const assetValues = [];
     if (showCurves.floatingAssets) assetValues.push(...navUnrealizedValues);
     if (showCurves.totalAssets) assetValues.push(...navRealizedValues);
@@ -440,6 +432,106 @@ function AdminDashboard() {
     const drawdownRange = drawdownMax - drawdownMin;
     const drawdownPadding = drawdownRange > 0 ? drawdownRange * 0.1 : 0.1;
 
+    const rawValues = showCurves.rawFloatingAssets ? rawUnrealizedValues : [];
+    const rawMin = rawValues.length > 0 ? Math.min(...rawValues) : 0;
+    const rawMax = rawValues.length > 0 ? Math.max(...rawValues) : 0;
+    const rawRange = rawMax - rawMin;
+    const rawPadding = rawValues.length > 0
+      ? (rawRange > 0 ? rawRange * 0.1 : Math.max(Math.abs(rawMax) * 0.1, 1))
+      : 0;
+
+    const navAxisVisible = assetValues.length > 0 && (showCurves.floatingAssets || showCurves.totalAssets);
+    const navAxisPosition = showCurves.rawFloatingAssets ? 'right' : 'left';
+    const drawdownOffset = navAxisVisible && navAxisPosition === 'right' ? 60 : 0;
+
+    const rawAxisIndex = 0;
+    const navAxisIndex = 1;
+    const drawdownAxisIndex = 2;
+
+    const yAxis = [
+      {
+        type: 'value',
+        name: '浮动资产 (原始值)',
+        position: 'left',
+        min: rawMin - rawPadding,
+        max: rawMax + rawPadding,
+        axisLabel: {
+          formatter: (value) => formatLargeNumber(value),
+        },
+        show: showCurves.rawFloatingAssets,
+      },
+      {
+        type: 'value',
+        name: '净值',
+        position: navAxisPosition,
+        offset: 0,
+        min: assetMin - assetPadding,
+        max: assetMax + assetPadding,
+        axisLabel: {
+          formatter: (value) => value.toFixed(3),
+        },
+        show: navAxisVisible,
+      },
+      {
+        type: 'value',
+        name: '最大回撤',
+        position: 'right',
+        offset: drawdownOffset,
+        min: drawdownMin - drawdownPadding,
+        max: drawdownMax + drawdownPadding,
+        axisLabel: {
+          formatter: (value) => `${(value * 100).toFixed(1)}%`,
+        },
+        show: showCurves.maxDrawdown,
+      },
+    ];
+
+    // 6. 构建系列数据
+    const series = [];
+    series.push({
+      name: '原始浮动资产',
+      type: 'line',
+      yAxisIndex: rawAxisIndex,
+      data: rawUnrealizedValues,
+      smooth: true,
+      itemStyle: { color: '#722ed1' },
+    });
+    series.push({
+      name: '浮动资产(净值)',
+      type: 'line',
+      yAxisIndex: navAxisIndex,
+      data: navUnrealizedValues,
+      smooth: true,
+      itemStyle: { color: '#1890ff' },
+    });
+    series.push({
+      name: '总资产(净值)',
+      type: 'line',
+      yAxisIndex: navAxisIndex,
+      data: navRealizedValues,
+      smooth: true,
+      itemStyle: { color: '#52c41a' },
+    });
+    series.push({
+      name: '最大回撤',
+      type: 'line',
+      yAxisIndex: drawdownAxisIndex,
+      data: maxDrawdown,
+      smooth: true,
+      lineStyle: { 
+        width: 1,
+        color: 'rgba(255, 77, 79, 0.5)',
+      },
+      itemStyle: { 
+        color: 'rgba(255, 77, 79, 0.5)',
+      },
+      areaStyle: {
+        color: 'rgba(255, 77, 79, 0.15)',
+      },
+      symbol: 'none',
+      symbolSize: 0,
+    });
+
     return {
       tooltip: {
         trigger: 'axis',
@@ -450,8 +542,9 @@ function AdminDashboard() {
           params.forEach(param => {
             if (param.seriesName === '最大回撤') {
               result += `${param.marker}${param.seriesName}: ${(param.value * 100).toFixed(2)}%<br/>`;
+            } else if (param.seriesName === '原始浮动资产') {
+              result += `${param.marker}${param.seriesName}: ${Number(param.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD<br/>`;
             } else {
-              // 显示净值（相对于基准的比例）
               const percentage = ((param.value - 1) * 100).toFixed(2);
               result += `${param.marker}${param.seriesName}: ${param.value.toFixed(4)} (${percentage >= 0 ? '+' : ''}${percentage}%)<br/>`;
             }
@@ -460,7 +553,8 @@ function AdminDashboard() {
         },
       },
       legend: {
-        data: legendData,
+        data: legendItems,
+        selected: legendSelection,
       },
       grid: {
         left: '3%',
@@ -473,28 +567,7 @@ function AdminDashboard() {
         boundaryGap: false,
         data: times,
       },
-      yAxis: [
-        ...(assetValues.length > 0 ? [{
-          type: 'value',
-          name: '净值',
-          position: 'left',
-          min: assetMin - assetPadding,
-          max: assetMax + assetPadding,
-          axisLabel: {
-            formatter: (value) => value.toFixed(3),
-          },
-        }] : []),
-        ...(showCurves.maxDrawdown ? [{
-          type: 'value',
-          name: '最大回撤',
-          position: assetValues.length > 0 ? 'right' : 'left',
-          min: drawdownMin - drawdownPadding,
-          max: drawdownMax + drawdownPadding,
-          axisLabel: {
-            formatter: (value) => `${(value * 100).toFixed(1)}%`,
-          },
-        }] : []),
-      ],
+      yAxis,
       series: series,
     };
   };
@@ -575,10 +648,12 @@ function AdminDashboard() {
   const widgetConfig = {
     assetOverview: {
       title: '资产总览',
-      render: () => (
-        <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+      render: () => {
+        const cardProps = { size: 'small', bodyStyle: { padding: 12 }, style: { minHeight: 90 } };
+        return (
+        <Row gutter={[12, 12]}>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="浮动资产 (CNY)"
                 value={assetOverview?.floatingAssetsCNY || 0}
@@ -588,8 +663,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="浮动资产 (USD)"
                 value={assetOverview?.floatingAssetsUSD || 0}
@@ -599,8 +674,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="总资产 (USD)"
                 value={assetOverview?.totalAssets || 0}
@@ -610,8 +685,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="未实现盈亏 (USD)"
                 value={assetOverview?.unrealizedPnl || 0}
@@ -621,8 +696,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="未实现盈亏(多头)"
                 value={assetOverview?.unrealizedPnlLong || 0}
@@ -631,8 +706,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="未实现盈亏(空头)"
                 value={assetOverview?.unrealizedPnlShort || 0}
@@ -641,8 +716,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="多头市值 (USD)"
                 value={assetOverview?.longMarketValue || 0}
@@ -651,8 +726,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="空头市值 (USD)"
                 value={assetOverview?.shortMarketValue || 0}
@@ -661,8 +736,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="多头杠杆率"
                 value={assetOverview?.longLeverage || 0}
@@ -671,8 +746,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="空头杠杆率"
                 value={assetOverview?.shortLeverage || 0}
@@ -681,8 +756,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="风险敞口"
                 value={assetOverview?.riskExposure || 0}
@@ -691,8 +766,8 @@ function AdminDashboard() {
               />
             </Card>
           </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card>
+          <Col xs={24} sm={12} lg={4}>
+            <Card {...cardProps}>
               <Statistic
                 title="美元兑RMB汇率"
                 value={assetOverview?.usdToCnyRate || 0}
@@ -701,7 +776,8 @@ function AdminDashboard() {
             </Card>
           </Col>
         </Row>
-      ),
+        );
+      },
     },
     equityCurve: {
       title: '资金曲线',
@@ -718,6 +794,7 @@ function AdminDashboard() {
                 <Option value="7d">7天</Option>
                 <Option value="30d">30天</Option>
                 <Option value="60d">60天</Option>
+                <Option value="90d">90天</Option>
                 <Option value="120d">120天</Option>
                 <Option value="180d">半年</Option>
                 <Option value="1y">1年</Option>
@@ -726,29 +803,15 @@ function AdminDashboard() {
                 <Option value="5y">5年</Option>
                 <Option value="10y">10年</Option>
               </Select>
-              <Checkbox.Group
-                value={Object.keys(showCurves).filter(key => showCurves[key])}
-                onChange={(checkedValues) => {
-                  setShowCurves({
-                    floatingAssets: checkedValues.includes('floatingAssets'),
-                    totalAssets: checkedValues.includes('totalAssets'),
-                    maxDrawdown: checkedValues.includes('maxDrawdown'),
-                  });
-                }}
-                options={[
-                  { label: '浮动资产', value: 'floatingAssets' },
-                  { label: '总资产', value: 'totalAssets' },
-                  { label: '最大回撤', value: 'maxDrawdown' },
-                ]}
-              />
             </Space>
           }
         >
           <ReactECharts 
+            className="chart-container"
             option={getEquityCurveOption()} 
-            style={{ height: '400px' }}
             notMerge={true}
             lazyUpdate={false}
+            onEvents={{ legendselectchanged: handleLegendSelectChange }}
             key={`equity-curve-${timeWindow}-${JSON.stringify(showCurves)}-${equityCurve.length}`}
           />
         </Card>
@@ -767,7 +830,7 @@ function AdminDashboard() {
             </Select>
           }
         >
-          <ReactECharts option={getPeriodPnlOption()} style={{ height: '400px' }} />
+          <ReactECharts className="chart-container" option={getPeriodPnlOption()} />
         </Card>
       ),
     },
@@ -775,15 +838,15 @@ function AdminDashboard() {
       title: '资产分布',
       render: () => (
         <Card title="资产分布">
-          <ReactECharts option={getAssetDistributionOption()} style={{ height: '400px' }} />
+          <ReactECharts className="chart-container" option={getAssetDistributionOption()} />
         </Card>
       ),
     },
     hostsStatus: {
       title: '服务器状态',
       render: () => (
-        <Card title="服务器状态" size="small" style={{ height: '100%' }}>
-          <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+        <Card title="服务器状态" size="small">
+          <div className="table-scroll">
             <Table
               dataSource={hostsStatus}
               rowKey="hostname"
@@ -812,8 +875,8 @@ function AdminDashboard() {
     healthStatus: {
       title: '策略状态',
       render: () => (
-        <Card title="策略状态" size="small" style={{ height: '100%' }}>
-          <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+        <Card title="策略状态" size="small">
+          <div className="table-scroll">
             <Table
               dataSource={healthStatus}
               rowKey={(record) => `${record.hostname}-${record.accountName}-${record.strategyName}`}
@@ -838,8 +901,8 @@ function AdminDashboard() {
     processStatus: {
       title: '进程状态',
       render: () => (
-        <Card title="进程状态" size="small" style={{ height: '100%' }}>
-          <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+        <Card title="进程状态" size="small">
+          <div className="table-scroll">
             <Table
               dataSource={processStatus}
               rowKey={(record) => `${record.hostname}-${record.name}`}
@@ -891,7 +954,7 @@ function AdminDashboard() {
 
   if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: '50px' }}>
+      <div className="dashboard-loading">
         <Spin size="large" />
       </div>
     );
@@ -900,9 +963,9 @@ function AdminDashboard() {
   const visibleLayout = layout.filter(item => item.visible);
 
   return (
-    <div style={{ padding: '24px', minHeight: '100vh' }}>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ margin: 0 }}>管理员仪表板</h1>
+    <div className="dashboard-container">
+      <div className="dashboard-header">
+        <h1>管理员面板</h1>
         <Space>
           <Button
             icon={<ReloadOutlined />}
@@ -923,15 +986,14 @@ function AdminDashboard() {
         </Space>
       </div>
 
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(24, 1fr)',
-        gap: '16px',
-        gridAutoRows: 'minmax(400px, auto)',
-      }}>
+      <div className="dashboard-grid">
         {visibleLayout.map((item) => {
           const config = widgetConfig[item.id];
           if (!config) return null;
+
+          const widgetClasses = ['dashboard-widget'];
+          if (draggedItem === item.id) widgetClasses.push('dragging');
+          if (dragOverItem === item.id) widgetClasses.push('drag-over');
 
           return (
             <div
@@ -940,19 +1002,17 @@ function AdminDashboard() {
               onDragStart={(e) => handleDragStart(e, item.id)}
               onDragOver={(e) => handleDragOver(e, item.id)}
               onDragEnd={handleDragEnd}
+              className={widgetClasses.join(' ')}
               style={{
                 gridColumn: `span ${item.w}`,
                 gridRow: `span ${item.h}`,
-                cursor: 'move',
-                opacity: draggedItem === item.id ? 0.5 : 1,
-                border: dragOverItem === item.id ? '2px dashed #1890ff' : 'none',
-                transition: 'all 0.2s',
               }}
             >
               <Card
+                className="dashboard-card"
                 title={
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <DragOutlined style={{ cursor: 'move', color: '#999' }} />
+                  <div className="dashboard-card-title">
+                    <DragOutlined />
                     {config.title}
                   </div>
                 }
@@ -964,7 +1024,6 @@ function AdminDashboard() {
                     onClick={() => toggleVisibility(item.id)}
                   />
                 }
-                style={{ height: '100%' }}
               >
                 {config.render()}
               </Card>

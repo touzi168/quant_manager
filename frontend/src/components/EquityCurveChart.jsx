@@ -1,213 +1,375 @@
-import { useEffect, useState } from 'react';
-import { Card, Select, Checkbox, Spin, Row, Col, message } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { Card, Select, Space, Spin, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '../store/api';
 
 const { Option } = Select;
 
+const formatLargeNumber = (value) => {
+  const absValue = Math.abs(value);
+  if (absValue >= 1_0000_0000) {
+    return `${(value / 1_0000_0000).toFixed(2)}亿`;
+  }
+  if (absValue >= 1_0000) {
+    return `${(value / 1_0000).toFixed(2)}万`;
+  }
+  if (absValue >= 1_000) {
+    return `${(value / 1_000).toFixed(2)}千`;
+  }
+  return value.toFixed(2);
+};
+
+const calculateWindowDrawdownFromNav = (navValues) => {
+  if (!navValues || navValues.length === 0) return [];
+  const drawdowns = [];
+  let peak = null;
+
+  navValues.forEach((nav) => {
+    if (peak === null || nav > peak) {
+      peak = nav;
+    }
+    if (peak > 0) {
+      const drawdown = (peak - nav) / peak;
+      drawdowns.push(-drawdown);
+    } else {
+      drawdowns.push(0);
+    }
+  });
+
+  return drawdowns;
+};
+
 function EquityCurveChart({ strategyId, isAdmin = false }) {
   const [loading, setLoading] = useState(false);
-  const [chartData, setChartData] = useState([]);
-  const [timeRange, setTimeRange] = useState('30d');
-  const [displayCurves, setDisplayCurves] = useState(['net_unrealized', 'max_drawdown']);
+  const [equityCurve, setEquityCurve] = useState([]);
+  const [timeWindow, setTimeWindow] = useState('30d');
+  const [showCurves, setShowCurves] = useState({
+    floatingAssets: true,
+    totalAssets: false,
+    rawFloatingAssets: false,
+    maxDrawdown: true,
+  });
 
-  const availableCurves = [
-    { key: 'net_unrealized', name: '总资金(含未实现盈亏)', color: '#1890ff' },
-    { key: 'net_realized', name: '净实现资金', color: '#52c41a' },
-    { key: 'max_drawdown', name: '最大回撤', color: '#f5222d' },
-  ];
+  const updateEquityCurveState = (data, { preservePreviousOnEmpty = false } = {}) => {
+    setEquityCurve((prev) => {
+      if (Array.isArray(data) && data.length > 0) {
+        return data;
+      }
+      if (preservePreviousOnEmpty && prev && prev.length > 0) {
+        return prev;
+      }
+      return [];
+    });
+  };
 
-  const timeRangeOptions = [
-    { value: '7d', label: '7天' },
-    { value: '30d', label: '30天' },
-    { value: '60d', label: '60天' },
-    { value: '90d', label: '90天' },
-    { value: '120d', label: '120天' },
-    { value: '180d', label: '180天' },
-    { value: '360d', label: '360天' },
-    { value: '720d', label: '720天' },
-  ];
-
-  useEffect(() => {
-    fetchEquityData();
-  }, [strategyId, timeRange, isAdmin]);
-
-  const fetchEquityData = async () => {
+  const fetchEquityCurve = useCallback(async () => {
     try {
       setLoading(true);
       let url;
       if (isAdmin || !strategyId) {
-        // 管理员模式，获取总资金曲线
-        url = `/admin/dashboard/equity-curve?timeRange=${timeRange}`;
+        url = `/admin/dashboard/equity-curve-drawdown?timeRange=${timeWindow}`;
       } else {
-        // 用户模式，获取策略资金曲线
-        url = `/user/dashboard/equity/${strategyId}?timeRange=${timeRange}`;
+        url = `/user/dashboard/equity/${strategyId}?timeRange=${timeWindow}`;
       }
-      
       const response = await api.get(url);
       if (response.data.success) {
-        setChartData(response.data.data);
+        updateEquityCurveState(response.data.data || []);
+      } else {
+        updateEquityCurveState([], { preservePreviousOnEmpty: true });
+        message.warning('资金曲线返回为空，已保留上一份数据');
       }
     } catch (error) {
-      message.error('获取资金曲线数据失败');
+      message.error('获取资金曲线失败，展示上一次数据');
+      updateEquityCurveState([], { preservePreviousOnEmpty: true });
     } finally {
       setLoading(false);
     }
+  }, [isAdmin, strategyId, timeWindow]);
+
+  useEffect(() => {
+    fetchEquityCurve();
+  }, [fetchEquityCurve]);
+
+  const handleLegendSelectChange = (params) => {
+    if (!params || !params.selected) return;
+    const selected = params.selected;
+    setShowCurves({
+      floatingAssets: !!selected['浮动资产(净值)'],
+      totalAssets: !!selected['总资产(净值)'],
+      rawFloatingAssets: !!selected['原始浮动资产'],
+      maxDrawdown: !!selected['最大回撤'],
+    });
   };
 
-  const getChartOption = () => {
-    if (!chartData || chartData.length === 0) {
-      return {};
-    }
-
-    const series = [];
-    const times = chartData.map((item) => item.time);
-
-    if (displayCurves.includes('net_unrealized')) {
-      series.push({
-        name: '总资金(含未实现盈亏)',
-        type: 'line',
-        data: chartData.map((item) => item.netUnrealized || item.net_unrealized),
-        smooth: true,
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(24, 144, 255, 0.3)' },
-              { offset: 1, color: 'rgba(24, 144, 255, 0.1)' },
-            ],
-          },
+  const getEquityCurveOption = () => {
+    const getBaseOption = (titleText = null) => {
+      const option = {
+        tooltip: {
+          trigger: 'axis',
+          axisPointer: { type: 'cross' },
         },
-      });
+        grid: {
+          left: '3%',
+          right: '4%',
+          bottom: '3%',
+          containLabel: true,
+        },
+        xAxis: {
+          type: 'category',
+          boundaryGap: false,
+          data: [],
+        },
+        yAxis: [],
+        series: [],
+      };
+
+      if (titleText) {
+        option.title = {
+          text: titleText,
+          left: 'center',
+          top: 'center',
+          textStyle: { fontSize: 16, color: '#999' },
+        };
+      }
+
+      return option;
+    };
+
+    if (!equityCurve || !Array.isArray(equityCurve) || equityCurve.length === 0) {
+      return getBaseOption('暂无数据');
     }
 
-    if (displayCurves.includes('net_realized')) {
-      series.push({
-        name: '净实现资金',
+    const filteredData = equityCurve.filter(
+      (item) => item && (item.netUnrealized !== undefined || item.netRealized !== undefined)
+    );
+
+    if (filteredData.length === 0) {
+      return getBaseOption('选定时间窗口内暂无数据');
+    }
+
+    const times = filteredData.map((item) => item.time || '').filter(Boolean);
+    const netUnrealized = filteredData.map((item) => parseFloat(item.netUnrealized) || 0);
+    const netRealized = filteredData.map((item) => parseFloat(item.netRealized) || 0);
+    const rawUnrealizedValues = [...netUnrealized];
+
+    const baseUnrealized = netUnrealized[0] || 1;
+    const baseRealized = netRealized[0] || 1;
+
+    const navUnrealizedValues = netUnrealized.map((value) =>
+      baseUnrealized !== 0 ? value / baseUnrealized : 1
+    );
+    const navRealizedValues = netRealized.map((value) =>
+      baseRealized !== 0 ? value / baseRealized : 1
+    );
+
+    const maxDrawdown = calculateWindowDrawdownFromNav(navUnrealizedValues);
+
+    const legendItems = ['浮动资产(净值)', '总资产(净值)', '原始浮动资产', '最大回撤'];
+    const legendSelection = {
+      '浮动资产(净值)': showCurves.floatingAssets,
+      '总资产(净值)': showCurves.totalAssets,
+      '原始浮动资产': showCurves.rawFloatingAssets,
+      '最大回撤': showCurves.maxDrawdown,
+    };
+
+    const assetValues = [];
+    if (showCurves.floatingAssets) assetValues.push(...navUnrealizedValues);
+    if (showCurves.totalAssets) assetValues.push(...navRealizedValues);
+
+    const assetMin = assetValues.length > 0 ? Math.min(...assetValues) : 0;
+    const assetMax = assetValues.length > 0 ? Math.max(...assetValues) : 1;
+    const assetRange = assetMax - assetMin;
+    const assetPadding = assetRange > 0 ? assetRange * 0.1 : 0.1;
+
+    const drawdownMin =
+      showCurves.maxDrawdown && maxDrawdown.length > 0 ? Math.min(...maxDrawdown) : -1;
+    const drawdownMax =
+      showCurves.maxDrawdown && maxDrawdown.length > 0 ? Math.max(...maxDrawdown) : 0;
+    const drawdownRange = drawdownMax - drawdownMin;
+    const drawdownPadding = drawdownRange > 0 ? drawdownRange * 0.1 : 0.1;
+
+    const rawValues = showCurves.rawFloatingAssets ? rawUnrealizedValues : [];
+    const rawMin = rawValues.length > 0 ? Math.min(...rawValues) : 0;
+    const rawMax = rawValues.length > 0 ? Math.max(...rawValues) : 0;
+    const rawRange = rawMax - rawMin;
+    const rawPadding =
+      rawValues.length > 0
+        ? rawRange > 0
+          ? rawRange * 0.1
+          : Math.max(Math.abs(rawMax) * 0.1, 1)
+        : 0;
+
+    const navAxisVisible =
+      assetValues.length > 0 && (showCurves.floatingAssets || showCurves.totalAssets);
+    const navAxisPosition = showCurves.rawFloatingAssets ? 'right' : 'left';
+    const drawdownOffset = navAxisVisible && navAxisPosition === 'right' ? 60 : 0;
+
+    const rawAxisIndex = 0;
+    const navAxisIndex = 1;
+    const drawdownAxisIndex = 2;
+
+    const yAxis = [
+      {
+        type: 'value',
+        name: '浮动资产 (原始值)',
+        position: 'left',
+        min: rawMin - rawPadding,
+        max: rawMax + rawPadding,
+        axisLabel: {
+          formatter: (value) => formatLargeNumber(value),
+        },
+        show: showCurves.rawFloatingAssets,
+      },
+      {
+        type: 'value',
+        name: '净值',
+        position: navAxisPosition,
+        offset: 0,
+        min: assetMin - assetPadding,
+        max: assetMax + assetPadding,
+        axisLabel: {
+          formatter: (value) => value.toFixed(3),
+        },
+        show: navAxisVisible,
+      },
+      {
+        type: 'value',
+        name: '最大回撤',
+        position: 'right',
+        offset: drawdownOffset,
+        min: drawdownMin - drawdownPadding,
+        max: drawdownMax + drawdownPadding,
+        axisLabel: {
+          formatter: (value) => `${(value * 100).toFixed(1)}%`,
+        },
+        show: showCurves.maxDrawdown,
+      },
+    ];
+
+    const series = [
+      {
+        name: '原始浮动资产',
         type: 'line',
-        data: chartData.map((item) => item.netRealized || item.net_realized),
+        yAxisIndex: rawAxisIndex,
+        data: rawUnrealizedValues,
         smooth: true,
-      });
-    }
-
-    if (displayCurves.includes('max_drawdown')) {
-      series.push({
+        itemStyle: { color: '#722ed1' },
+      },
+      {
+        name: '浮动资产(净值)',
+        type: 'line',
+        yAxisIndex: navAxisIndex,
+        data: navUnrealizedValues,
+        smooth: true,
+        itemStyle: { color: '#1890ff' },
+      },
+      {
+        name: '总资产(净值)',
+        type: 'line',
+        yAxisIndex: navAxisIndex,
+        data: navRealizedValues,
+        smooth: true,
+        itemStyle: { color: '#52c41a' },
+      },
+      {
         name: '最大回撤',
         type: 'line',
-        yAxisIndex: 1,
-        data: chartData.map((item) => item.maxDrawdown || item.max_drawdown || 0),
+        yAxisIndex: drawdownAxisIndex,
+        data: maxDrawdown,
         smooth: true,
-        lineStyle: { color: '#f5222d' },
-      });
-    }
+        lineStyle: {
+          width: 1,
+          color: 'rgba(255, 77, 79, 0.5)',
+        },
+        itemStyle: {
+          color: 'rgba(255, 77, 79, 0.5)',
+        },
+        areaStyle: {
+          color: 'rgba(255, 77, 79, 0.15)',
+        },
+        symbol: 'none',
+        symbolSize: 0,
+      },
+    ];
 
     return {
-      title: {
-        text: '资金曲线分析',
-        left: 'center',
-      },
       tooltip: {
         trigger: 'axis',
+        axisPointer: { type: 'cross' },
         formatter: (params) => {
-          let tooltip = `${params[0].name}<br/>`;
+          if (!params || params.length === 0) return '';
+          let result = `${params[0].axisValue}<br/>`;
           params.forEach((param) => {
-            if (param.seriesName.includes('回撤')) {
-              tooltip += `${param.seriesName}: ${param.value.toFixed(2)}%<br/>`;
+            if (param.seriesName === '最大回撤') {
+              result += `${param.marker}${param.seriesName}: ${(param.value * 100).toFixed(2)}%<br/>`;
+            } else if (param.seriesName === '原始浮动资产') {
+              result += `${param.marker}${param.seriesName}: ${Number(param.value).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })} USD<br/>`;
             } else {
-              tooltip += `${param.seriesName}: ${param.value.toFixed(2)} USDT<br/>`;
+              const percentage = ((param.value - 1) * 100).toFixed(2);
+              result += `${param.marker}${param.seriesName}: ${param.value.toFixed(4)} (${percentage >= 0 ? '+' : ''}${percentage}%)<br/>`;
             }
           });
-          return tooltip;
+          return result;
         },
       },
       legend: {
-        data: displayCurves.map((key) =>
-          availableCurves.find((c) => c.key === key)?.name
-        ),
-        bottom: 10,
+        data: legendItems,
+        selected: legendSelection,
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        containLabel: true,
       },
       xAxis: {
         type: 'category',
+        boundaryGap: false,
         data: times,
       },
-      yAxis: [
-        {
-          type: 'value',
-          name: '资金 (USDT)',
-          position: 'left',
-        },
-        {
-          type: 'value',
-          name: '回撤 (%)',
-          position: 'right',
-          min: 0,
-          max: 100,
-        },
-      ],
+      yAxis,
       series,
-      dataZoom: [
-        {
-          type: 'inside',
-          start: 0,
-          end: 100,
-        },
-        {
-          start: 0,
-          end: 100,
-          height: 30,
-        },
-      ],
     };
   };
 
   return (
     <Card
-      title="资金曲线分析"
+      title="资金曲线"
       extra={
-        <Select
-          value={timeRange}
-          style={{ width: 120 }}
-          onChange={(value) => {
-            setTimeRange(value);
-          }}
-        >
-          {timeRangeOptions.map((option) => (
-            <Option key={option.value} value={option.value}>
-              {option.label}
-            </Option>
-          ))}
-        </Select>
+        <Space>
+          <Select value={timeWindow} onChange={setTimeWindow} style={{ width: 120 }}>
+            <Option value="7d">7天</Option>
+            <Option value="30d">30天</Option>
+            <Option value="60d">60天</Option>
+            <Option value="90d">90天</Option>
+            <Option value="120d">120天</Option>
+            <Option value="180d">半年</Option>
+            <Option value="1y">1年</Option>
+            <Option value="2y">2年</Option>
+            <Option value="3y">3年</Option>
+            <Option value="5y">5年</Option>
+            <Option value="10y">10年</Option>
+          </Select>
+        </Space>
       }
     >
       {loading ? (
-        <div style={{ textAlign: 'center', padding: '50px' }}>
+        <div style={{ textAlign: 'center', padding: 50 }}>
           <Spin size="large" />
         </div>
       ) : (
-        <div>
-          <div style={{ marginBottom: 16 }}>
-            <Checkbox.Group
-              value={displayCurves}
-              onChange={setDisplayCurves}
-            >
-              <Row gutter={[16, 8]}>
-                {availableCurves.map((curve) => (
-                  <Col span={8} key={curve.key}>
-                    <Checkbox value={curve.key}>{curve.name}</Checkbox>
-                  </Col>
-                ))}
-              </Row>
-            </Checkbox.Group>
-          </div>
-          <ReactECharts
-            option={getChartOption()}
-            style={{ height: '450px', width: '100%' }}
-          />
-        </div>
+        <ReactECharts
+          className="chart-container"
+          option={getEquityCurveOption()}
+          notMerge={true}
+          lazyUpdate={false}
+          onEvents={{ legendselectchanged: handleLegendSelectChange }}
+          style={{ height: 450 }}
+          key={`strategy-equity-${strategyId || 'all'}-${timeWindow}-${JSON.stringify(showCurves)}-${equityCurve.length}`}
+        />
       )}
     </Card>
   );

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Card, Row, Col, Spin, message, Statistic, Table, Tabs } from 'antd';
-import { DollarOutlined, RiseOutlined, FallOutlined } from '@ant-design/icons';
 import api from '../store/api';
 import EquityCurveChart from '../components/EquityCurveChart';
 
@@ -42,53 +41,123 @@ function StrategyDetail() {
 
   const { strategy, assets, positions, equity } = summary;
 
+  const getTrendColor = (value) => (value >= 0 ? '#52c41a' : '#ff4d4f');
+
+  const assetStats = assets
+    ? [
+        {
+          key: 'floatingAssetsCNY',
+          title: '浮动资产 (CNY)',
+          value: assets.floatingAssetsCNY,
+          precision: 2,
+          valueStyle: { color: '#1890ff' },
+        },
+        {
+          key: 'floatingAssetsUSD',
+          title: '浮动资产 (USD)',
+          value: assets.floatingAssetsUSD,
+          precision: 2,
+          valueStyle: { color: '#1890ff' },
+        },
+        {
+          key: 'totalAssets',
+          title: '总资产 (USD)',
+          value: assets.totalAssets,
+          precision: 2,
+          valueStyle: { color: '#52c41a' },
+        },
+        {
+          key: 'unrealizedPnl',
+          title: '未实现盈亏 (USD)',
+          value: assets.unrealizedPnl,
+          precision: 2,
+          valueStyle: { color: getTrendColor(assets.unrealizedPnl) },
+        },
+        {
+          key: 'unrealizedPnlLong',
+          title: '未实现盈亏(多头)',
+          value: assets.unrealizedPnlLong,
+          precision: 2,
+          valueStyle: { color: getTrendColor(assets.unrealizedPnlLong) },
+        },
+        {
+          key: 'unrealizedPnlShort',
+          title: '未实现盈亏(空头)',
+          value: assets.unrealizedPnlShort,
+          precision: 2,
+          valueStyle: { color: getTrendColor(assets.unrealizedPnlShort) },
+        },
+        {
+          key: 'longMarketValue',
+          title: '多头市值 (USD)',
+          value: assets.longMarketValue,
+          precision: 2,
+          valueStyle: { color: '#1890ff' },
+        },
+        {
+          key: 'shortMarketValue',
+          title: '空头市值 (USD)',
+          value: assets.shortMarketValue,
+          precision: 2,
+          valueStyle: { color: '#ff4d4f' },
+        },
+        {
+          key: 'longLeverage',
+          title: '多头杠杆率',
+          value: assets.longLeverage,
+          precision: 4,
+          valueStyle: { color: '#1890ff' },
+        },
+        {
+          key: 'shortLeverage',
+          title: '空头杠杆率',
+          value: assets.shortLeverage,
+          precision: 4,
+          valueStyle: { color: '#ff4d4f' },
+        },
+        {
+          key: 'riskExposure',
+          title: '风险敞口',
+          value: assets.riskExposure,
+          precision: 4,
+          valueStyle: { color: getTrendColor(assets.riskExposure) },
+        },
+        {
+          key: 'usdToCnyRate',
+          title: '美元兑RMB汇率',
+          value: assets.usdToCnyRate,
+          precision: 4,
+        },
+      ]
+    : [];
+
   return (
     <div>
       <h1 style={{ marginBottom: 24 }}>{strategy.name}</h1>
-      
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="净实现资金"
-              value={equity?.netRealized || 0}
-              prefix={<DollarOutlined />}
-              precision={2}
-              valueStyle={{ color: '#3f8600' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="总资金"
-              value={equity?.netUnrealized || 0}
-              prefix={<DollarOutlined />}
-              precision={2}
-              valueStyle={{ color: '#1890ff' }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="总资产"
-              value={assets?.totalAssets || 0}
-              prefix={<RiseOutlined />}
-              precision={2}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="持仓数量"
-              value={positions?.length || 0}
-              prefix={<FallOutlined />}
-            />
-          </Card>
-        </Col>
-      </Row>
+
+      {assetStats.length > 0 && (
+        <>
+          <h2 style={{ margin: '32px 0 16px' }}>资产概览</h2>
+          <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+            {assetStats.map((stat) => (
+              <Col xs={24} sm={12} lg={4} key={stat.key}>
+                <Card
+                  size="small"
+                  bodyStyle={{ padding: 12 }}
+                  style={{ minHeight: 110 }}
+                >
+                  <Statistic
+                    title={stat.title}
+                    value={stat.value ?? 0}
+                    precision={stat.precision}
+                    valueStyle={stat.valueStyle}
+                  />
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        </>
+      )}
 
       <Tabs
         defaultActiveKey="equity"

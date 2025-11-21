@@ -1,72 +1,152 @@
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+
+import pandas as pd  # type: ignore
+
 from app.core.database import execute_query
 from app.core.redis_client import redis_get, redis_set
 from app.utils.logger import logger
 
+RESAMPLE_RULES = {
+    "30d": "1H",
+    "60d": "2H",
+    "90d": "3H",
+    "120d": "4H",
+    "180d": "6H",
+    "1y": "12H",
+    "2y": "1D",
+    "3y": "1D",
+    "5y": "1W",
+    "10y": "1W",
+}
+
+def _get_usd_to_cny_rate() -> float:
+    """获取美元兑人民币汇率，默认为7.0"""
+    cny_rate = execute_query(
+        "SELECT price FROM cny_rates WHERE exchange = 'binance' LIMIT 1"
+    )
+    return float(cny_rate[0]["price"]) if cny_rate and cny_rate[0]["price"] else 7.0
+
+def _calculate_asset_metrics(assets: List[Dict[str, Any]], positions: List[Dict[str, Any]], usd_to_cny: float) -> Dict[str, float]:
+    total_net_unrealized = sum(float(a.get("net_unrealized") or 0) for a in assets)
+    total_net_realized = sum(float(a.get("net_realized") or 0) for a in assets)
+    total_unpnl = sum(float(p.get("unRealizedProfit") or 0) for p in positions)
+
+    long_positions = [p for p in positions if float(p.get("positionAmt") or 0) > 0]
+    short_positions = [p for p in positions if float(p.get("positionAmt") or 0) < 0]
+
+    long_unpnl = sum(float(p.get("unRealizedProfit") or 0) for p in long_positions)
+    short_unpnl = sum(float(p.get("unRealizedProfit") or 0) for p in short_positions)
+
+    long_assets = [
+        a for a in assets
+        if float(a.get("free") or 0) > 0 and (a.get("asset") or "").upper() != "USDT"
+    ]
+    short_assets = [a for a in assets if float(a.get("free") or 0) < 0]
+
+    long_assets_value = sum(float(a.get("net_unrealized") or 0) for a in long_assets)
+    long_positions_value = sum(
+        float(p.get("positionAmt") or 0) * float(p.get("markPrice") or 0)
+        for p in long_positions
+    )
+    long_market_value = long_assets_value + long_positions_value
+
+    short_assets_value = sum(float(a.get("net_unrealized") or 0) for a in short_assets)
+    short_positions_value = sum(
+        abs(float(p.get("positionAmt") or 0)) * float(p.get("markPrice") or 0)
+        for p in short_positions
+    )
+    short_market_value = short_assets_value + short_positions_value
+
+    long_leverage = (long_market_value / total_net_unrealized) if total_net_unrealized > 0 else 0
+    short_leverage = (short_market_value / total_net_unrealized) if total_net_unrealized > 0 else 0
+    risk_exposure = long_leverage - short_leverage
+
+    return {
+        "floatingAssetsCNY": total_net_unrealized * usd_to_cny,
+        "floatingAssetsUSD": total_net_unrealized,
+        "totalAssets": total_net_realized,
+        "unrealizedPnl": total_unpnl,
+        "unrealizedPnlLong": long_unpnl,
+        "unrealizedPnlShort": short_unpnl,
+        "longMarketValue": long_market_value,
+        "shortMarketValue": short_market_value,
+        "longLeverage": long_leverage,
+        "shortLeverage": short_leverage,
+        "riskExposure": risk_exposure,
+        "usdToCnyRate": usd_to_cny,
+    }
+
 async def get_asset_summary(email: Optional[str] = None, strategy_id: Optional[int] = None) -> List[Dict[str, Any]]:
-    """获取资产汇总"""
+    """获取资产汇总（支持单策略视角，与资产总览逻辑一致）"""
     try:
-        cache_key = "asset_summary"
-        if email:
-            cache_key += f":{email}"
-        if strategy_id:
-            cache_key += f":{strategy_id}"
+        target_email = email
+        cache_key_parts = ["asset_summary"]
         
-        # 尝试从缓存获取
+        if strategy_id:
+            cache_key_parts.append(f"strategy:{strategy_id}")
+            if not target_email:
+                strategies = execute_query(
+                    "SELECT account_email FROM strategies WHERE id = %s",
+                    (strategy_id,)
+                )
+                if strategies:
+                    target_email = strategies[0]["account_email"]
+        
+        if target_email:
+            cache_key_parts.append(target_email)
+        else:
+            cache_key_parts.append("all")
+        
+        cache_key = ":".join(cache_key_parts)
+        
         cached = await redis_get(cache_key)
         if cached:
             return cached
         
-        sql = """
-            SELECT 
-                email,
-                exchange,
-                trade_type,
-                SUM(total) as total_assets,
-                SUM(free) as free_assets,
-                SUM(locked) as locked_assets,
-                SUM(unpnl) as unrealized_pnl
-            FROM assets
-            WHERE time = (SELECT MAX(time) FROM assets)
-        """
+        assets_time_sql = "SELECT MAX(time) as max_time FROM assets"
+        asset_time_params: List[Any] = []
+        if target_email:
+            assets_time_sql += " WHERE email = %s"
+            asset_time_params.append(target_email)
+        latest_time = execute_query(assets_time_sql, tuple(asset_time_params) if asset_time_params else None)
+        asset_max_time = latest_time[0]["max_time"] if latest_time and latest_time[0]["max_time"] else None
         
-        params = []
-        if email:
-            sql += " AND email = %s"
-            params.append(email)
+        assets: List[Dict[str, Any]] = []
+        if asset_max_time:
+            asset_sql = "SELECT asset, net_unrealized, unpnl, free, net_realized FROM assets WHERE time = %s"
+            asset_params: List[Any] = [asset_max_time]
+            if target_email:
+                asset_sql += " AND email = %s"
+                asset_params.append(target_email)
+            assets = execute_query(asset_sql, tuple(asset_params))
         
+        positions: List[Dict[str, Any]] = []
+        positions_time_sql = "SELECT MAX(time) as max_time FROM positions"
+        position_time_params: List[Any] = []
+        if target_email:
+            positions_time_sql += " WHERE email = %s"
+            position_time_params.append(target_email)
+        latest_position_time = execute_query(positions_time_sql, tuple(position_time_params) if position_time_params else None)
+        position_max_time = latest_position_time[0]["max_time"] if latest_position_time and latest_position_time[0]["max_time"] else None
+        
+        if position_max_time:
+            position_sql = "SELECT positionAmt, unRealizedProfit, markPrice FROM positions WHERE time = %s"
+            position_params: List[Any] = [position_max_time]
+            if target_email:
+                position_sql += " AND email = %s"
+                position_params.append(target_email)
+            positions = execute_query(position_sql, tuple(position_params))
+        
+        usd_to_cny = _get_usd_to_cny_rate()
+        result = _calculate_asset_metrics(assets, positions, usd_to_cny)
+        if target_email:
+            result["email"] = target_email
         if strategy_id:
-            # 通过策略ID查找关联的账户邮箱
-            strategies = execute_query(
-                "SELECT account_email FROM strategies WHERE id = %s",
-                (strategy_id,)
-            )
-            if strategies:
-                sql += " AND email = %s"
-                params.append(strategies[0]["account_email"])
+            result["strategyId"] = strategy_id
         
-        sql += " GROUP BY email, exchange, trade_type"
-        
-        result = execute_query(sql, tuple(params) if params else None)
-        
-        # 转换为字典列表
-        result_list = [
-            {
-                "email": r["email"],
-                "exchange": r["exchange"],
-                "tradeType": r["trade_type"],
-                "totalAssets": float(r["total_assets"]) if r["total_assets"] else 0,
-                "freeAssets": float(r["free_assets"]) if r["free_assets"] else 0,
-                "lockedAssets": float(r["locked_assets"]) if r["locked_assets"] else 0,
-                "unrealizedPnl": float(r["unrealized_pnl"]) if r["unrealized_pnl"] else 0
-            }
-            for r in result
-        ]
-        
-        # 缓存5分钟
-        await redis_set(cache_key, result_list, ttl=300)
-        
+        result_list = [result]
+        await redis_set(cache_key, result_list, ttl=60)
         return result_list
     except Exception as e:
         logger.error(f"获取资产汇总失败: {e}")
@@ -155,52 +235,79 @@ async def get_equity_curve(email: str, strategy_id: Optional[int] = None, time_r
         if cached:
             return cached
         
-        # 计算时间范围
-        days = int(time_range.replace("d", ""))
-        start_date = datetime.utcnow() - timedelta(days=days)
-        
-        sql = None
-        params = (email, start_date)
-        
-        # 根据时间范围选择查询策略
-        if time_range == "7d":
-            # 短期：直接查询原始数据
-            sql = """
-                SELECT 
-                    time,
-                    net_realized,
-                    net_unrealized,
-                    long_valuation,
-                    short_valuation,
-                    uniMMR
-                FROM equity 
-                WHERE email = %s AND time >= %s
-                ORDER BY time ASC
-            """
+        if time_range.endswith('d'):
+            days = int(time_range.replace("d", ""))
+        elif time_range.endswith('y'):
+            years = int(time_range.replace("y", ""))
+            days = years * 365
         else:
-            # 长期：重采样为1小时数据
-            sql = """
-                SELECT 
-                    DATE_FORMAT(time, '%%Y-%%m-%%d %%H:00:00') as time,
-                    AVG(net_realized) as net_realized,
-                    AVG(net_unrealized) as net_unrealized,
-                    AVG(long_valuation) as long_valuation,
-                    AVG(short_valuation) as short_valuation,
-                    AVG(uniMMR) as uniMMR
-                FROM equity 
-                WHERE email = %s AND time >= %s
-                GROUP BY DATE_FORMAT(time, '%%Y-%%m-%%d %%H:00:00')
-                ORDER BY time ASC
-            """
-        
-        result = execute_query(sql, params)
-        
-        # 计算最大回撤
+            days = 30
+
+        start_date = datetime.utcnow() - timedelta(days=days)
+
+        sql = """
+            SELECT 
+                time,
+                net_realized,
+                net_unrealized,
+                long_valuation,
+                short_valuation,
+                uniMMR
+            FROM equity 
+            WHERE email = %s AND time >= %s
+            ORDER BY time ASC
+        """
+        result = execute_query(sql, (email, start_date))
+
+        if not result:
+            await redis_set(cache_key, [], ttl=600)
+            return []
+
+        processed_data = result
+
+        if time_range != "7d":
+            df = pd.DataFrame(result)
+            if df.empty:
+                await redis_set(cache_key, [], ttl=600)
+                return []
+            df["time"] = pd.to_datetime(df["time"])
+            df = df.set_index("time").sort_index()
+            resample_rule = RESAMPLE_RULES.get(time_range, "1H")
+            df_resampled = df.resample(resample_rule).agg({
+                "net_realized": "last",
+                "net_unrealized": "last",
+                "long_valuation": "last",
+                "short_valuation": "last",
+                "uniMMR": "last",
+            })
+            df_resampled = df_resampled.dropna(how="all")
+            df_resampled = df_resampled.reset_index()
+
+            processed_data = []
+            for _, row in df_resampled.iterrows():
+                if pd.isna(row["net_unrealized"]):
+                    continue
+                time_value = row["time"]
+                if isinstance(time_value, pd.Timestamp):
+                    time_value = time_value.to_pydatetime()
+                processed_data.append({
+                    "time": time_value,
+                    "net_realized": row["net_realized"],
+                    "net_unrealized": row["net_unrealized"],
+                    "long_valuation": row["long_valuation"],
+                    "short_valuation": row["short_valuation"],
+                    "uniMMR": row["uniMMR"],
+                })
+
+        if not processed_data:
+            await redis_set(cache_key, [], ttl=600)
+            return []
+
         result_list = []
         peak = None
         max_drawdown = 0
         
-        for r in result:
+        for r in processed_data:
             net_unrealized = float(r["net_unrealized"]) if r["net_unrealized"] else 0
             if peak is None or net_unrealized > peak:
                 peak = net_unrealized
@@ -210,8 +317,14 @@ async def get_equity_curve(email: str, strategy_id: Optional[int] = None, time_r
                 if drawdown > max_drawdown:
                     max_drawdown = drawdown
             
+            time_value = r["time"]
+            if isinstance(time_value, datetime):
+                time_key = time_value.isoformat()
+            else:
+                time_key = str(time_value)
+
             result_list.append({
-                "time": r["time"].isoformat() if isinstance(r["time"], datetime) else str(r["time"]),
+                "time": time_key,
                 "netRealized": float(r["net_realized"]) if r["net_realized"] else 0,
                 "netUnrealized": net_unrealized,
                 "longValuation": float(r["long_valuation"]) if r["long_valuation"] else 0,
@@ -418,7 +531,7 @@ async def get_asset_overview() -> Dict[str, Any]:
         
         # 使用聚合查询一次性获取所有资产数据
         assets = execute_query(
-            "SELECT net_unrealized, unpnl, free, net_realized FROM assets WHERE time = %s",
+            "SELECT asset, net_unrealized, unpnl, free, net_realized FROM assets WHERE time = %s",
             (max_time,)
         )
         
@@ -434,60 +547,8 @@ async def get_asset_overview() -> Dict[str, Any]:
                 (position_max_time,)
             )
         
-        # 计算各项指标
-        total_net_unrealized = sum(float(a["net_unrealized"] or 0) for a in assets)
-        total_net_realized = sum(float(a.get("net_realized") or 0) for a in assets)
-        
-        # 从positions表计算未实现盈亏
-        total_unpnl = sum(float(p["unRealizedProfit"] or 0) for p in positions)
-        
-        # 多头和空头持仓
-        long_positions = [p for p in positions if float(p["positionAmt"] or 0) > 0]
-        short_positions = [p for p in positions if float(p["positionAmt"] or 0) < 0]
-        
-        # 未实现盈亏（多头和空头）
-        long_unpnl = sum(float(p["unRealizedProfit"] or 0) for p in long_positions)
-        short_unpnl = sum(float(p["unRealizedProfit"] or 0) for p in short_positions)
-        
-        # 多头和空头资产
-        long_assets = [a for a in assets if float(a["free"] or 0) > 0]
-        short_assets = [a for a in assets if float(a["free"] or 0) < 0]
-        
-        # 多头市值 = assets表中free>0的net_unrealized总和 + positions表中positionAmt>0的positionAmt*markPrice总和
-        long_assets_value = sum(float(a["net_unrealized"] or 0) for a in long_assets)
-        long_positions_value = sum(float(p["positionAmt"] or 0) * float(p["markPrice"] or 0) for p in long_positions)
-        long_market_value = long_assets_value + long_positions_value
-        
-        # 空头市值 = assets表中free<0的net_unrealized总和 + positions表中positionAmt<0的positionAmt*markPrice绝对值总和
-        short_assets_value = sum(float(a["net_unrealized"] or 0) for a in short_assets)
-        short_positions_value = sum(abs(float(p["positionAmt"] or 0)) * float(p["markPrice"] or 0) for p in short_positions)
-        short_market_value = short_assets_value + short_positions_value
-        
-        # 获取美元兑RMB汇率
-        cny_rate = execute_query(
-            "SELECT price FROM cny_rates WHERE exchange = 'binance' LIMIT 1"
-        )
-        usd_to_cny = float(cny_rate[0]["price"]) if cny_rate and cny_rate[0]["price"] else 7.0
-        
-        # 计算杠杆率
-        long_leverage = (long_market_value / total_net_unrealized) if total_net_unrealized > 0 else 0
-        short_leverage = (short_market_value / total_net_unrealized) if total_net_unrealized > 0 else 0
-        risk_exposure = long_leverage - short_leverage
-        
-        result = {
-            "floatingAssetsCNY": total_net_unrealized * usd_to_cny,
-            "floatingAssetsUSD": total_net_unrealized,
-            "totalAssets": total_net_realized,
-            "unrealizedPnl": total_unpnl,
-            "unrealizedPnlLong": long_unpnl,
-            "unrealizedPnlShort": short_unpnl,
-            "longMarketValue": long_market_value,
-            "shortMarketValue": short_market_value,
-            "longLeverage": long_leverage,
-            "shortLeverage": short_leverage,
-            "riskExposure": risk_exposure,
-            "usdToCnyRate": usd_to_cny,
-        }
+        usd_to_cny = _get_usd_to_cny_rate()
+        result = _calculate_asset_metrics(assets, positions, usd_to_cny)
         
         # 缓存1分钟
         await redis_set(cache_key, result, ttl=60)
@@ -799,49 +860,65 @@ async def get_equity_curve_with_drawdown(time_range: str = "30d") -> List[Dict[s
         
         start_date = datetime.utcnow() - timedelta(days=days)
         
-        # 根据时间范围选择查询策略
-        if time_range == "7d":
-            # 短期：直接查询原始数据
-            sql = """
-                SELECT 
-                    time,
-                    SUM(net_realized) as net_realized,
-                    SUM(net_unrealized) as net_unrealized
-                FROM equity 
-                WHERE email IS NOT NULL AND time >= %s
-                GROUP BY time
-                ORDER BY time ASC
-            """
-        else:
-            # 长期：重采样为1小时数据
-            sql = """
-                SELECT 
-                    DATE_FORMAT(time, '%%Y-%%m-%%d %%H:00:00') as time,
-                    SUM(net_realized) as net_realized,
-                    SUM(net_unrealized) as net_unrealized
-                FROM equity 
-                WHERE email IS NOT NULL AND time >= %s
-                GROUP BY DATE_FORMAT(time, '%%Y-%%m-%%d %%H:00:00')
-                ORDER BY time ASC
-            """
+        sql = """
+            SELECT 
+                time,
+                SUM(net_realized) as net_realized,
+                SUM(net_unrealized) as net_unrealized
+            FROM equity 
+            WHERE email IS NOT NULL AND time >= %s
+            GROUP BY time
+            ORDER BY time ASC
+        """
         
         result = execute_query(sql, (start_date,))
         
-        # 转换为列表并计算最大回撤
+        if not result:
+            await redis_set(cache_key, [], ttl=60)
+            return []
+        
+        processed_data = result
+        
+        if time_range != "7d":
+            df = pd.DataFrame(result)
+            if df.empty:
+                await redis_set(cache_key, [], ttl=60)
+                return []
+            df["time"] = pd.to_datetime(df["time"])
+            df = df.set_index("time").sort_index()
+            resample_rule = RESAMPLE_RULES.get(time_range, "1H")
+            df_resampled = df.resample(resample_rule).agg({
+                "net_realized": "last",
+                "net_unrealized": "last",
+            })
+            df_resampled = df_resampled.dropna(how="all")
+            df_resampled = df_resampled.reset_index()
+            processed_data = []
+            for _, row in df_resampled.iterrows():
+                if pd.isna(row["net_unrealized"]):
+                    continue
+                time_value = row["time"]
+                if isinstance(time_value, pd.Timestamp):
+                    time_value = time_value.to_pydatetime()
+                processed_data.append({
+                    "time": time_value,
+                    "net_realized": row["net_realized"],
+                    "net_unrealized": row["net_unrealized"],
+                })
+        
         result_list = []
         peak = None
         max_drawdown = 0
         
-        for r in result:
+        for r in processed_data:
             net_unrealized = float(r["net_unrealized"] or 0)
             net_realized = float(r["net_realized"] or 0)
             
-            # 处理时间格式
-            time_key = r["time"]
-            if isinstance(time_key, datetime):
-                time_key = time_key.isoformat()
+            time_value = r["time"]
+            if isinstance(time_value, datetime):
+                time_key = time_value.isoformat()
             else:
-                time_key = str(time_key)
+                time_key = str(time_value)
             
             if peak is None or net_unrealized > peak:
                 peak = net_unrealized

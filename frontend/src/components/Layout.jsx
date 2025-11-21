@@ -29,13 +29,13 @@ function Layout({ children }) {
     {
       key: '/dashboard',
       icon: <DashboardOutlined />,
-      label: '我的仪表板',
+      label: '我的面板',
       show: true,
     },
     {
       key: '/admin',
       icon: <BarChartOutlined />,
-      label: '管理员仪表板',
+      label: '管理员面板',
       show: isAdmin,
     },
     {
