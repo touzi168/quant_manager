@@ -1,10 +1,35 @@
-import { useEffect, useState } from 'react';
-import { Card, Row, Col, Spin, message, Select, Table, Tag, Statistic, Button, Dropdown, Checkbox, Space } from 'antd';
-import { DollarOutlined, SettingOutlined, ReloadOutlined, DragOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import { useEffect, useState, useRef } from 'react';
+import { Card, Row, Col, Spin, message, Select, Table, Tag, Statistic, Button, Space, Switch, Tooltip } from 'antd';
+import { 
+  DollarOutlined, 
+  ReloadOutlined, 
+  ClockCircleOutlined,
+  WalletOutlined,
+  ThunderboltOutlined,
+  RiseOutlined,
+  FallOutlined,
+  StockOutlined,
+  BarChartOutlined,
+  PieChartOutlined,
+  DatabaseOutlined,
+  DeploymentUnitOutlined,
+  MonitorOutlined,
+  SafetyCertificateOutlined,
+  DashboardOutlined
+} from '@ant-design/icons';
 import api from '../store/api';
 import ReactECharts from 'echarts-for-react';
 
 const { Option } = Select;
+
+// 刷新间隔选项（单位：毫秒）
+const REFRESH_INTERVALS = {
+  '1m': 1 * 60 * 1000,      // 1分钟
+  '5m': 5 * 60 * 1000,      // 5分钟
+  '15m': 15 * 60 * 1000,    // 15分钟
+  '30m': 30 * 60 * 1000,    // 30分钟
+  '1h': 60 * 60 * 1000,     // 1小时
+};
 
 function AdminDashboard() {
   const [loading, setLoading] = useState(true);
@@ -16,6 +41,18 @@ function AdminDashboard() {
   const [periodPnl, setPeriodPnl] = useState([]);
   const [assetDistribution, setAssetDistribution] = useState([]);
   const [period, setPeriod] = useState('day');
+  
+  // 自动刷新相关状态
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(() => {
+    const saved = localStorage.getItem('adminDashboardAutoRefreshEnabled');
+    return saved === 'true';
+  });
+  const [refreshInterval, setRefreshInterval] = useState(() => {
+    const saved = localStorage.getItem('adminDashboardRefreshInterval');
+    return saved || '5m'; // 默认5分钟
+  });
+  const refreshTimerRef = useRef(null);
+  const nextRefreshTimeRef = useRef(null);
   // 资金曲线相关状态
   const [timeWindow, setTimeWindow] = useState('30d'); // 时间窗口：7d, 30d, 60d, 90d, 120d, 180d, 1y, 2y, 3y, 5y, 10y
   const [showCurves, setShowCurves] = useState({
@@ -39,25 +76,6 @@ function AdminDashboard() {
     return value.toFixed(2);
   };
 
-  // 布局配置
-  const [layout, setLayout] = useState(() => {
-    const saved = localStorage.getItem('adminDashboardLayout');
-    if (saved) {
-      return JSON.parse(saved);
-    }
-    return [
-      { id: 'assetOverview', x: 0, y: 0, w: 24, h: 1, visible: true },
-      { id: 'equityCurve', x: 0, y: 1, w: 24, h: 1, visible: true },
-      { id: 'periodPnl', x: 0, y: 2, w: 12, h: 1, visible: true },
-      { id: 'assetDistribution', x: 12, y: 2, w: 12, h: 1, visible: true },
-      { id: 'hostsStatus', x: 0, y: 3, w: 8, h: 1, visible: true },
-      { id: 'healthStatus', x: 8, y: 3, w: 8, h: 1, visible: true },
-      { id: 'processStatus', x: 16, y: 3, w: 8, h: 1, visible: true },
-    ];
-  });
-  
-  const [draggedItem, setDraggedItem] = useState(null);
-  const [dragOverItem, setDragOverItem] = useState(null);
 
   useEffect(() => {
     fetchAllData();
@@ -72,10 +90,72 @@ function AdminDashboard() {
     fetchEquityCurve();
   }, [timeWindow]);
 
+
+  // 自动刷新功能
   useEffect(() => {
-    // 保存布局到localStorage
-    localStorage.setItem('adminDashboardLayout', JSON.stringify(layout));
-  }, [layout]);
+    // 保存自动刷新设置到localStorage
+    localStorage.setItem('adminDashboardAutoRefreshEnabled', String(autoRefreshEnabled));
+    localStorage.setItem('adminDashboardRefreshInterval', refreshInterval);
+
+    // 清除现有的定时器
+    if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+
+    // 如果启用了自动刷新，设置新的定时器
+    if (autoRefreshEnabled) {
+      const interval = REFRESH_INTERVALS[refreshInterval];
+      
+      // 设置下次刷新时间
+      nextRefreshTimeRef.current = Date.now() + interval;
+      
+      // 设置定时器
+      refreshTimerRef.current = setInterval(() => {
+        // 更新下次刷新时间
+        nextRefreshTimeRef.current = Date.now() + interval;
+        
+        // 执行刷新（不显示loading状态，静默刷新）
+        fetchAllDataSilent();
+      }, interval);
+
+      // 组件卸载时清理定时器
+      return () => {
+        if (refreshTimerRef.current) {
+          clearInterval(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+      };
+    }
+  }, [autoRefreshEnabled, refreshInterval]);
+
+  // 计算距离下次刷新的时间
+  const [timeUntilNextRefresh, setTimeUntilNextRefresh] = useState('');
+  
+  useEffect(() => {
+    if (!autoRefreshEnabled) {
+      setTimeUntilNextRefresh('');
+      return;
+    }
+
+    const updateCountdown = () => {
+      if (nextRefreshTimeRef.current) {
+        const remaining = Math.max(0, nextRefreshTimeRef.current - Date.now());
+        const seconds = Math.floor(remaining / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const displaySeconds = seconds % 60;
+        setTimeUntilNextRefresh(`${minutes}:${displaySeconds.toString().padStart(2, '0')}`);
+      }
+    };
+
+    // 立即更新一次
+    updateCountdown();
+    
+    // 每秒更新一次倒计时
+    const countdownTimer = setInterval(updateCountdown, 1000);
+    
+    return () => clearInterval(countdownTimer);
+  }, [autoRefreshEnabled, refreshInterval]);
 
   const updateEquityCurveState = (data, { preservePreviousOnEmpty = false } = {}) => {
     setEquityCurve(prev => {
@@ -107,6 +187,25 @@ function AdminDashboard() {
       message.error('获取数据失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 静默刷新（不显示loading状态）
+  const fetchAllDataSilent = async () => {
+    try {
+      // 使用 Promise.allSettled 确保所有请求都能执行，即使某个失败也不影响其他
+      await Promise.allSettled([
+        fetchAssetOverview(),
+        fetchHostsStatus(),
+        fetchHealthStatus(),
+        fetchProcessStatus(),
+        fetchEquityCurve(),
+        fetchPeriodPnl(),
+        fetchAssetDistribution(),
+      ]);
+    } catch (error) {
+      console.error('自动刷新数据失败:', error);
+      // 静默刷新失败时不显示错误提示，避免打扰用户
     }
   };
 
@@ -201,48 +300,6 @@ function AdminDashboard() {
     }
   };
 
-  // 拖拽处理
-  const handleDragStart = (e, itemId) => {
-    setDraggedItem(itemId);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/html', itemId);
-  };
-
-  const handleDragOver = (e, itemId) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (itemId !== draggedItem) {
-      setDragOverItem(itemId);
-    }
-  };
-
-  const handleDragEnd = () => {
-    if (draggedItem && dragOverItem && draggedItem !== dragOverItem) {
-      const newLayout = [...layout];
-      const draggedIndex = newLayout.findIndex(item => item.id === draggedItem);
-      const targetIndex = newLayout.findIndex(item => item.id === dragOverItem);
-      
-      if (draggedIndex !== -1 && targetIndex !== -1) {
-        const [dragged] = newLayout.splice(draggedIndex, 1);
-        newLayout.splice(targetIndex, 0, dragged);
-        
-        // 重新计算y坐标
-        newLayout.forEach((item, index) => {
-          item.y = index;
-        });
-        
-        setLayout(newLayout);
-      }
-    }
-    setDraggedItem(null);
-    setDragOverItem(null);
-  };
-
-  const toggleVisibility = (itemId) => {
-    setLayout(layout.map(item => 
-      item.id === itemId ? { ...item, visible: !item.visible } : item
-    ));
-  };
 
   // 计算时间窗口的起始日期
   const getTimeWindowStart = (window) => {
@@ -603,6 +660,13 @@ function AdminDashboard() {
           data: pnls,
           itemStyle: {
             color: (params) => params.value >= 0 ? '#52c41a' : '#ff4d4f',
+            borderRadius: [4, 4, 0, 0],
+          },
+          emphasis: {
+            itemStyle: {
+              shadowBlur: 10,
+              shadowColor: 'rgba(0, 0, 0, 0.3)',
+            },
           },
         },
       ],
@@ -638,140 +702,510 @@ function AdminDashboard() {
           name: '资产分布',
           type: 'bar',
           data: values,
-          itemStyle: { color: '#1890ff' },
+          itemStyle: {
+            color: (params) => {
+              const colors = [
+                '#667eea', '#764ba2', '#f093fb', '#f5576c',
+                '#4facfe', '#00f2fe', '#43e97b', '#38f9d7',
+                '#fa709a', '#fee140', '#30cfd0', '#a8edea',
+              ];
+              return colors[params.dataIndex % colors.length];
+            },
+            borderRadius: [4, 4, 0, 0],
+          },
+          emphasis: {
+            itemStyle: {
+              shadowBlur: 10,
+              shadowColor: 'rgba(102, 126, 234, 0.5)',
+            },
+          },
         },
       ],
     };
   };
 
-  // 栏目配置
+  // 固定布局配置
   const widgetConfig = {
     assetOverview: {
       title: '资产总览',
       render: () => {
-        const cardProps = { size: 'small', bodyStyle: { padding: 12 }, style: { minHeight: 90 } };
+        // 更优雅的配色方案 - 浅蓝色主题，柔和渐变
+        const cardStyles = [
+          { 
+            background: 'linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%)',
+            borderLeft: '4px solid #38bdf8',
+            iconColor: '#0284c7',
+          },
+          { 
+            background: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
+            borderLeft: '4px solid #60a5fa',
+            iconColor: '#2563eb',
+          },
+          { 
+            background: 'linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%)',
+            borderLeft: '4px solid #818cf8',
+            iconColor: '#4f46e5',
+          },
+          { 
+            background: assetOverview?.unrealizedPnl >= 0 
+              ? 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)'
+              : 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+            borderLeft: `4px solid ${assetOverview?.unrealizedPnl >= 0 ? '#10b981' : '#ef4444'}`,
+            iconColor: assetOverview?.unrealizedPnl >= 0 ? '#059669' : '#dc2626',
+          },
+          { 
+            background: assetOverview?.unrealizedPnlLong >= 0
+              ? 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)'
+              : 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+            borderLeft: `4px solid ${assetOverview?.unrealizedPnlLong >= 0 ? '#3b82f6' : '#ef4444'}`,
+            iconColor: assetOverview?.unrealizedPnlLong >= 0 ? '#2563eb' : '#dc2626',
+          },
+          { 
+            background: assetOverview?.unrealizedPnlShort >= 0
+              ? 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)'
+              : 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+            borderLeft: `4px solid ${assetOverview?.unrealizedPnlShort >= 0 ? '#f59e0b' : '#ef4444'}`,
+            iconColor: assetOverview?.unrealizedPnlShort >= 0 ? '#d97706' : '#dc2626',
+          },
+          { 
+            background: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
+            borderLeft: '4px solid #3b82f6',
+            iconColor: '#2563eb',
+          },
+          { 
+            background: 'linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%)',
+            borderLeft: '4px solid #f472b6',
+            iconColor: '#db2777',
+          },
+          { 
+            background: 'linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%)',
+            borderLeft: '4px solid #8b5cf6',
+            iconColor: '#7c3aed',
+          },
+          { 
+            background: 'linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%)',
+            borderLeft: '4px solid #ec4899',
+            iconColor: '#db2777',
+          },
+          { 
+            background: assetOverview?.riskExposure >= 0
+              ? 'linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)'
+              : 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+            borderLeft: `4px solid ${assetOverview?.riskExposure >= 0 ? '#10b981' : '#ef4444'}`,
+            iconColor: assetOverview?.riskExposure >= 0 ? '#059669' : '#dc2626',
+          },
+          { 
+            background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+            borderLeft: '4px solid #fbbf24',
+            iconColor: '#d97706',
+          },
+        ];
         return (
-        <Row gutter={[12, 12]}>
+        <Row gutter={[16, 16]}>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[0].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #e0f2fe',
+                borderLeft: cardStyles[0].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="浮动资产 (CNY)"
+                title={<span style={{ color: cardStyles[0].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>浮动资产 (CNY)</span>}
                 value={assetOverview?.floatingAssetsCNY || 0}
-                prefix={<DollarOutlined />}
+                prefix={<span style={{ color: cardStyles[0].iconColor, fontSize: 18, marginRight: 4 }}>¥</span>}
                 precision={2}
-                valueStyle={{ color: '#1890ff' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[1].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #dbeafe',
+                borderLeft: cardStyles[1].borderLeft,
+                transition: 'all 0.3s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="浮动资产 (USD)"
+                title={<span style={{ color: cardStyles[1].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>浮动资产 (USD)</span>}
                 value={assetOverview?.floatingAssetsUSD || 0}
-                prefix={<DollarOutlined />}
+                prefix={<DollarOutlined style={{ color: cardStyles[1].iconColor, fontSize: 18 }} />}
                 precision={2}
-                valueStyle={{ color: '#1890ff' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[2].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #e0e7ff',
+                borderLeft: cardStyles[2].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="总资产 (USD)"
+                title={<span style={{ color: cardStyles[2].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>总资产 (USD)</span>}
                 value={assetOverview?.totalAssets || 0}
-                prefix={<DollarOutlined />}
+                prefix={<WalletOutlined style={{ color: cardStyles[2].iconColor, fontSize: 18 }} />}
                 precision={2}
-                valueStyle={{ color: '#52c41a' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[3].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: `1px solid ${assetOverview?.unrealizedPnl >= 0 ? '#d1fae5' : '#fee2e2'}`,
+                borderLeft: cardStyles[3].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="未实现盈亏 (USD)"
+                title={<span style={{ color: cardStyles[3].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>未实现盈亏 (USD)</span>}
                 value={assetOverview?.unrealizedPnl || 0}
-                prefix={<DollarOutlined />}
+                prefix={assetOverview?.unrealizedPnl >= 0 
+                  ? <RiseOutlined style={{ color: cardStyles[3].iconColor, fontSize: 18 }} />
+                  : <FallOutlined style={{ color: cardStyles[3].iconColor, fontSize: 18 }} />
+                }
                 precision={2}
-                valueStyle={{ color: assetOverview?.unrealizedPnl >= 0 ? '#52c41a' : '#ff4d4f' }}
+                valueStyle={{ 
+                  color: cardStyles[3].iconColor, 
+                  fontWeight: 700, 
+                  fontSize: 20,
+                  marginBottom: 0
+                }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[4].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: `1px solid ${assetOverview?.unrealizedPnlLong >= 0 ? '#dbeafe' : '#fee2e2'}`,
+                borderLeft: cardStyles[4].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="未实现盈亏(多头)"
+                title={<span style={{ color: cardStyles[4].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>未实现盈亏(多头)</span>}
                 value={assetOverview?.unrealizedPnlLong || 0}
+                prefix={<ThunderboltOutlined style={{ color: cardStyles[4].iconColor, fontSize: 18 }} />}
                 precision={2}
-                valueStyle={{ color: assetOverview?.unrealizedPnlLong >= 0 ? '#52c41a' : '#ff4d4f' }}
+                valueStyle={{ 
+                  color: cardStyles[4].iconColor, 
+                  fontWeight: 700, 
+                  fontSize: 20,
+                  marginBottom: 0
+                }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[5].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: `1px solid ${assetOverview?.unrealizedPnlShort >= 0 ? '#fef3c7' : '#fee2e2'}`,
+                borderLeft: cardStyles[5].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="未实现盈亏(空头)"
+                title={<span style={{ color: cardStyles[5].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>未实现盈亏(空头)</span>}
                 value={assetOverview?.unrealizedPnlShort || 0}
+                prefix={<ThunderboltOutlined style={{ color: cardStyles[5].iconColor, fontSize: 18 }} />}
                 precision={2}
-                valueStyle={{ color: assetOverview?.unrealizedPnlShort >= 0 ? '#52c41a' : '#ff4d4f' }}
+                valueStyle={{ 
+                  color: cardStyles[5].iconColor, 
+                  fontWeight: 700, 
+                  fontSize: 20,
+                  marginBottom: 0
+                }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[6].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #dbeafe',
+                borderLeft: cardStyles[6].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="多头市值 (USD)"
+                title={<span style={{ color: cardStyles[6].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>多头市值 (USD)</span>}
                 value={assetOverview?.longMarketValue || 0}
+                prefix={<RiseOutlined style={{ color: cardStyles[6].iconColor, fontSize: 18 }} />}
                 precision={2}
-                valueStyle={{ color: '#1890ff' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[7].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #fce7f3',
+                borderLeft: cardStyles[7].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="空头市值 (USD)"
+                title={<span style={{ color: cardStyles[7].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>空头市值 (USD)</span>}
                 value={assetOverview?.shortMarketValue || 0}
+                prefix={<FallOutlined style={{ color: cardStyles[7].iconColor, fontSize: 18 }} />}
                 precision={2}
-                valueStyle={{ color: '#ff4d4f' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[8].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #e0e7ff',
+                borderLeft: cardStyles[8].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="多头杠杆率"
+                title={<span style={{ color: cardStyles[8].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>多头杠杆率</span>}
                 value={assetOverview?.longLeverage || 0}
+                prefix={<StockOutlined style={{ color: cardStyles[8].iconColor, fontSize: 18 }} />}
                 precision={4}
-                valueStyle={{ color: '#1890ff' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[9].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #fce7f3',
+                borderLeft: cardStyles[9].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="空头杠杆率"
+                title={<span style={{ color: cardStyles[9].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>空头杠杆率</span>}
                 value={assetOverview?.shortLeverage || 0}
+                prefix={<StockOutlined style={{ color: cardStyles[9].iconColor, fontSize: 18 }} />}
                 precision={4}
-                valueStyle={{ color: '#ff4d4f' }}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[10].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: `1px solid ${assetOverview?.riskExposure >= 0 ? '#d1fae5' : '#fee2e2'}`,
+                borderLeft: cardStyles[10].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="风险敞口"
+                title={<span style={{ color: cardStyles[10].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>风险敞口</span>}
                 value={assetOverview?.riskExposure || 0}
+                prefix={<SafetyCertificateOutlined style={{ color: cardStyles[10].iconColor, fontSize: 18 }} />}
                 precision={4}
-                valueStyle={{ color: assetOverview?.riskExposure >= 0 ? '#52c41a' : '#ff4d4f' }}
+                valueStyle={{ 
+                  color: cardStyles[10].iconColor, 
+                  fontWeight: 700, 
+                  fontSize: 20,
+                  marginBottom: 0
+                }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
           <Col xs={24} sm={12} lg={4}>
-            <Card {...cardProps}>
+            <Card 
+              size="small" 
+              bodyStyle={{ 
+                padding: '12px 16px 8px 16px',
+                background: cardStyles[11].background,
+                borderRadius: 8,
+                position: 'relative',
+                overflow: 'hidden',
+              }}
+              style={{ 
+                border: '1px solid #fef3c7',
+                borderLeft: cardStyles[11].borderLeft,
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-2px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
               <Statistic
-                title="美元兑RMB汇率"
+                title={<span style={{ color: cardStyles[11].iconColor, fontWeight: 600, fontSize: 13, marginBottom: 4, display: 'block' }}>美元兑RMB汇率</span>}
                 value={assetOverview?.usdToCnyRate || 0}
+                prefix={<BarChartOutlined style={{ color: cardStyles[11].iconColor, fontSize: 18 }} />}
                 precision={4}
+                valueStyle={{ color: '#0f172a', fontWeight: 700, fontSize: 20, marginBottom: 0 }}
+                style={{ margin: 0, padding: 0 }}
               />
             </Card>
           </Col>
@@ -783,7 +1217,12 @@ function AdminDashboard() {
       title: '资金曲线',
       render: () => (
         <Card
-          title="资金曲线"
+          title={
+            <span style={{ fontSize: 16, fontWeight: 600 }}>
+              <DashboardOutlined style={{ marginRight: 8, color: '#1890ff' }} />
+              资金曲线
+            </span>
+          }
           extra={
             <Space>
               <Select
@@ -805,6 +1244,10 @@ function AdminDashboard() {
               </Select>
             </Space>
           }
+          style={{
+            border: '1px solid #e8e8e8',
+            borderRadius: 8,
+          }}
         >
           <ReactECharts 
             className="chart-container"
@@ -821,7 +1264,12 @@ function AdminDashboard() {
       title: '周期盈亏',
       render: () => (
         <Card
-          title="周期盈亏"
+          title={
+            <span style={{ fontSize: 16, fontWeight: 600 }}>
+              <BarChartOutlined style={{ marginRight: 8, color: '#52c41a' }} />
+              周期盈亏
+            </span>
+          }
           extra={
             <Select value={period} onChange={setPeriod} style={{ width: 120 }}>
               <Option value="day">按天</Option>
@@ -829,6 +1277,10 @@ function AdminDashboard() {
               <Option value="month">按月</Option>
             </Select>
           }
+          style={{
+            border: '1px solid #e8e8e8',
+            borderRadius: 8,
+          }}
         >
           <ReactECharts className="chart-container" option={getPeriodPnlOption()} />
         </Card>
@@ -837,7 +1289,18 @@ function AdminDashboard() {
     assetDistribution: {
       title: '资产分布',
       render: () => (
-        <Card title="资产分布">
+        <Card 
+          title={
+            <span style={{ fontSize: 16, fontWeight: 600 }}>
+              <PieChartOutlined style={{ marginRight: 8, color: '#722ed1' }} />
+              资产分布
+            </span>
+          }
+          style={{
+            border: '1px solid #e8e8e8',
+            borderRadius: 8,
+          }}
+        >
           <ReactECharts className="chart-container" option={getAssetDistributionOption()} />
         </Card>
       ),
@@ -845,26 +1308,67 @@ function AdminDashboard() {
     hostsStatus: {
       title: '服务器状态',
       render: () => (
-        <Card title="服务器状态" size="small">
+        <Card 
+          title={
+            <span style={{ fontSize: 16, fontWeight: 600 }}>
+              <MonitorOutlined style={{ marginRight: 8, color: '#1890ff' }} />
+              服务器状态
+            </span>
+          }
+          size="small"
+          style={{
+            border: '1px solid #e8e8e8',
+            borderRadius: 8,
+          }}
+        >
           <div className="table-scroll">
             <Table
               dataSource={hostsStatus}
               rowKey="hostname"
               pagination={false}
               size="small"
+              className="admin-table-styled"
+              style={{
+                borderRadius: 8,
+                overflow: 'hidden',
+              }}
+              rowClassName={(record, index) => index % 2 === 0 ? 'table-row-even' : 'table-row-odd'}
               columns={[
-                { title: '主机名', dataIndex: 'hostname', key: 'hostname' },
-                {
-                  title: '磁盘使用率',
-                  dataIndex: 'diskUsed',
-                  key: 'diskUsed',
-                  render: (value) => value ? `${value.toFixed(2)}%` : '-',
+                { 
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>主机名</span>, 
+                  dataIndex: 'hostname', 
+                  key: 'hostname',
+                  render: (text) => <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span>
                 },
                 {
-                  title: '磁盘空闲率',
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>磁盘使用率</span>,
+                  dataIndex: 'diskUsed',
+                  key: 'diskUsed',
+                  align: 'right',
+                  render: (value) => (
+                    <span style={{ 
+                      color: value > 90 ? '#ef4444' : '#10b981',
+                      fontWeight: 600,
+                      fontSize: 13
+                    }}>
+                      {value ? `${value.toFixed(2)}%` : '-'}
+                    </span>
+                  ),
+                },
+                {
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>磁盘空闲率</span>,
                   dataIndex: 'diskFree',
                   key: 'diskFree',
-                  render: (value) => value ? `${value.toFixed(2)}%` : '-',
+                  align: 'right',
+                  render: (value) => (
+                    <span style={{ 
+                      color: value < 20 ? '#ef4444' : value < 40 ? '#f59e0b' : '#10b981',
+                      fontWeight: 600,
+                      fontSize: 13
+                    }}>
+                      {value ? `${value.toFixed(2)}%` : '-'}
+                    </span>
+                  ),
                 },
               ]}
             />
@@ -875,22 +1379,73 @@ function AdminDashboard() {
     healthStatus: {
       title: '策略状态',
       render: () => (
-        <Card title="策略状态" size="small">
+        <Card 
+          title={
+            <span style={{ fontSize: 16, fontWeight: 600 }}>
+              <DeploymentUnitOutlined style={{ marginRight: 8, color: '#52c41a' }} />
+              策略状态
+            </span>
+          }
+          size="small"
+          style={{
+            border: '1px solid #e8e8e8',
+            borderRadius: 8,
+          }}
+        >
           <div className="table-scroll">
             <Table
               dataSource={healthStatus}
               rowKey={(record) => `${record.hostname}-${record.accountName}-${record.strategyName}`}
               pagination={false}
               size="small"
+              className="admin-table-styled"
+              style={{
+                borderRadius: 8,
+                overflow: 'hidden',
+              }}
+              rowClassName={(record, index) => index % 2 === 0 ? 'table-row-even' : 'table-row-odd'}
               columns={[
-                { title: '主机名', dataIndex: 'hostname', key: 'hostname' },
-                { title: '账户', dataIndex: 'accountName', key: 'accountName' },
-                { title: '策略', dataIndex: 'strategyName', key: 'strategyName' },
+                { 
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>主机名</span>, 
+                  dataIndex: 'hostname', 
+                  key: 'hostname',
+                  render: (text) => <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span>
+                },
+                { 
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>账户</span>, 
+                  dataIndex: 'accountName', 
+                  key: 'accountName',
+                  render: (text) => <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span>
+                },
+                { 
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>策略</span>, 
+                  dataIndex: 'strategyName', 
+                  key: 'strategyName',
+                  render: (text) => <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span>
+                },
                 {
-                  title: '运行时间',
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>运行时间</span>,
                   dataIndex: 'runTime',
                   key: 'runTime',
-                  render: (text) => text ? new Date(text).toLocaleString('zh-CN') : '-',
+                  render: (text) => {
+                    if (!text) {
+                      return <span style={{ color: '#64748b', fontSize: 12, fontWeight: 500 }}>-</span>;
+                    }
+                    const runTime = new Date(text);
+                    const now = new Date();
+                    const diffMinutes = (now - runTime) / (1000 * 60);
+                    const isOver65Minutes = diffMinutes > 65;
+                    const formattedTime = runTime.toLocaleString('zh-CN');
+                    return (
+                      <span style={{ 
+                        color: isOver65Minutes ? '#ef4444' : '#10b981', 
+                        fontSize: 12, 
+                        fontWeight: 500 
+                      }}>
+                        {formattedTime}
+                      </span>
+                    );
+                  },
                 },
               ]}
             />
@@ -901,35 +1456,101 @@ function AdminDashboard() {
     processStatus: {
       title: '进程状态',
       render: () => (
-        <Card title="进程状态" size="small">
-          <div className="table-scroll">
+        <Card 
+          title={
+            <span style={{ fontSize: 16, fontWeight: 600 }}>
+              <DatabaseOutlined style={{ marginRight: 8, color: '#722ed1' }} />
+              进程状态
+            </span>
+          }
+          size="small"
+          style={{
+            border: '1px solid #e8e8e8',
+            borderRadius: 8,
+          }}
+        >
+          <div 
+            style={{
+              maxHeight: '400px',
+              overflowY: 'auto',
+              overflowX: 'auto',
+            }}
+          >
             <Table
               dataSource={processStatus}
               rowKey={(record) => `${record.hostname}-${record.name}`}
               pagination={false}
               size="small"
+              className="admin-table-styled"
+              scroll={{ y: 350 }}
+              style={{
+                borderRadius: 8,
+                overflow: 'hidden',
+              }}
+              rowClassName={(record, index) => index % 2 === 0 ? 'table-row-even' : 'table-row-odd'}
               columns={[
-                { title: '主机名', dataIndex: 'hostname', key: 'hostname' },
-                { title: '进程名', dataIndex: 'name', key: 'name' },
+                { 
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>主机名</span>, 
+                  dataIndex: 'hostname', 
+                  key: 'hostname',
+                  render: (text) => <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span>
+                },
+                { 
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>进程名</span>, 
+                  dataIndex: 'name', 
+                  key: 'name',
+                  render: (text) => <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span>
+                },
                 {
-                  title: '状态',
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>状态</span>,
                   dataIndex: 'status',
                   key: 'status',
-                  render: (status) => (
-                    <Tag color={status === 'online' ? 'green' : 'red'}>{status}</Tag>
+                  align: 'center',
+                  render: (status) => {
+                    const isOnline = status === 'online';
+                    return (
+                      <Tag 
+                        color={isOnline ? 'success' : 'error'}
+                        style={{ 
+                          borderRadius: 12,
+                          fontWeight: 600,
+                          padding: '4px 12px',
+                          margin: 0,
+                          border: 'none',
+                          backgroundColor: isOnline ? '#10b981' : '#ef4444',
+                          color: '#fff',
+                        }}
+                      >
+                        {isOnline ? '在线' : '离线'}
+                      </Tag>
+                    );
+                  },
+                },
+                {
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>CPU</span>,
+                  dataIndex: 'cpu',
+                  key: 'cpu',
+                  align: 'right',
+                  render: (value) => (
+                    <span style={{ 
+                      color: value > 80 ? '#ef4444' : value > 50 ? '#f59e0b' : '#10b981',
+                      fontWeight: 600,
+                      fontSize: 13
+                    }}>
+                      {value ? `${value.toFixed(2)}%` : '-'}
+                    </span>
                   ),
                 },
                 {
-                  title: 'CPU',
-                  dataIndex: 'cpu',
-                  key: 'cpu',
-                  render: (value) => value ? `${value.toFixed(2)}%` : '-',
-                },
-                {
-                  title: '内存',
+                  title: <span style={{ fontWeight: 600, color: '#0f172a' }}>内存</span>,
                   dataIndex: 'memory',
                   key: 'memory',
-                  render: (value) => value ? `${(value / 1024 / 1024).toFixed(2)} MB` : '-',
+                  align: 'right',
+                  render: (value) => (
+                    <span style={{ color: '#64748b', fontWeight: 500, fontSize: 13 }}>
+                      {value ? `${(value / 1024 / 1024).toFixed(2)} MB` : '-'}
+                    </span>
+                  ),
                 },
               ]}
             />
@@ -939,98 +1560,165 @@ function AdminDashboard() {
     },
   };
 
-  // 栏目设置菜单
-  const widgetMenuItems = layout.map(item => ({
-    key: item.id,
-    label: (
-      <Checkbox
-        checked={item.visible}
-        onChange={() => toggleVisibility(item.id)}
-      >
-        {widgetConfig[item.id]?.title || item.id}
-      </Checkbox>
-    ),
-  }));
-
   if (loading) {
     return (
-      <div className="dashboard-loading">
+      <div style={{ textAlign: 'center', padding: '50px' }}>
         <Spin size="large" />
       </div>
     );
   }
 
-  const visibleLayout = layout.filter(item => item.visible);
-
   return (
-    <div className="dashboard-container">
-      <div className="dashboard-header">
-        <h1>管理员面板</h1>
+    <div>
+      <style>{`
+        .admin-table-styled .ant-table-thead > tr > th {
+          background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%) !important;
+          border-bottom: 2px solid #cbd5e1 !important;
+          font-weight: 600 !important;
+          color: #0f172a !important;
+          padding: 12px 16px !important;
+          font-size: 13px !important;
+        }
+        .admin-table-styled .ant-table-tbody > tr > td {
+          padding: 12px 16px !important;
+          border-bottom: 1px solid #e2e8f0 !important;
+          transition: all 0.2s ease !important;
+        }
+        .admin-table-styled .table-row-even {
+          background: #ffffff !important;
+        }
+        .admin-table-styled .table-row-odd {
+          background: #f8fafc !important;
+        }
+        .admin-table-styled .ant-table-tbody > tr:hover {
+          background: #e0f2fe !important;
+          transform: scale(1.01);
+          box-shadow: 0 2px 8px rgba(29, 155, 240, 0.15);
+        }
+        .admin-table-styled .ant-table-container {
+          border-radius: 8px;
+          overflow: hidden;
+        }
+        .admin-table-styled .ant-table {
+          border-radius: 8px;
+        }
+      `}</style>
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        marginBottom: 24,
+        padding: '16px 24px',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        borderRadius: 12,
+      }}>
+        <h1 style={{ 
+          margin: 0,
+          color: '#fff',
+          fontSize: 24,
+          fontWeight: 700,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+        }}>
+          <DashboardOutlined style={{ fontSize: 28 }} />
+          管理员面板
+        </h1>
         <Space>
+          {/* 自动刷新设置 */}
+          <Space>
+            <Tooltip title={autoRefreshEnabled ? `下次刷新: ${timeUntilNextRefresh}` : '启用自动刷新'}>
+              <Space>
+                <ClockCircleOutlined style={{ color: autoRefreshEnabled ? '#fff' : 'rgba(255, 255, 255, 0.7)' }} />
+                <span style={{ fontSize: 12, color: '#fff', minWidth: 50, fontWeight: 500 }}>
+                  {autoRefreshEnabled ? timeUntilNextRefresh : '自动刷新'}
+                </span>
+              </Space>
+            </Tooltip>
+            <Switch
+              checked={autoRefreshEnabled}
+              onChange={(checked) => {
+                setAutoRefreshEnabled(checked);
+                if (checked) {
+                  message.success(`已启用自动刷新，间隔: ${refreshInterval === '1m' ? '1分钟' : refreshInterval === '5m' ? '5分钟' : refreshInterval === '15m' ? '15分钟' : refreshInterval === '30m' ? '30分钟' : '1小时'}`);
+                } else {
+                  message.info('已关闭自动刷新');
+                }
+              }}
+              size="small"
+            />
+            {autoRefreshEnabled && (
+              <Select
+                value={refreshInterval}
+                onChange={(value) => {
+                  setRefreshInterval(value);
+                  message.success(`刷新间隔已更改为: ${value === '1m' ? '1分钟' : value === '5m' ? '5分钟' : value === '15m' ? '15分钟' : value === '30m' ? '30分钟' : '1小时'}`);
+                }}
+                size="small"
+                style={{ 
+                  width: 80,
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  borderColor: 'rgba(255, 255, 255, 0.3)',
+                }}
+                popupClassName="admin-select-dropdown"
+              >
+                <Option value="1m">1分钟</Option>
+                <Option value="5m">5分钟</Option>
+                <Option value="15m">15分钟</Option>
+                <Option value="30m">30分钟</Option>
+                <Option value="1h">1小时</Option>
+              </Select>
+            )}
+          </Space>
+          
           <Button
             icon={<ReloadOutlined />}
             onClick={fetchAllData}
             loading={loading}
+            type="primary"
+            style={{
+              background: 'rgba(255, 255, 255, 0.2)',
+              border: '1px solid rgba(255, 255, 255, 0.3)',
+              color: '#fff',
+              fontWeight: 600,
+            }}
           >
-            刷新
+            手动刷新
           </Button>
-          <Dropdown
-            menu={{ items: widgetMenuItems }}
-            trigger={['click']}
-            placement="bottomRight"
-          >
-            <Button icon={<SettingOutlined />}>
-              栏目设置
-            </Button>
-          </Dropdown>
         </Space>
       </div>
 
-      <div className="dashboard-grid">
-        {visibleLayout.map((item) => {
-          const config = widgetConfig[item.id];
-          if (!config) return null;
+      {/* 固定布局 */}
+      <Row gutter={[16, 16]}>
+        {/* 资产总览 - 全宽 */}
+        <Col xs={24}>
+          {widgetConfig.assetOverview?.render()}
+        </Col>
 
-          const widgetClasses = ['dashboard-widget'];
-          if (draggedItem === item.id) widgetClasses.push('dragging');
-          if (dragOverItem === item.id) widgetClasses.push('drag-over');
+        {/* 资金曲线 - 全宽 */}
+        <Col xs={24}>
+          {widgetConfig.equityCurve?.render()}
+        </Col>
 
-          return (
-            <div
-              key={item.id}
-              draggable
-              onDragStart={(e) => handleDragStart(e, item.id)}
-              onDragOver={(e) => handleDragOver(e, item.id)}
-              onDragEnd={handleDragEnd}
-              className={widgetClasses.join(' ')}
-              style={{
-                gridColumn: `span ${item.w}`,
-                gridRow: `span ${item.h}`,
-              }}
-            >
-              <Card
-                className="dashboard-card"
-                title={
-                  <div className="dashboard-card-title">
-                    <DragOutlined />
-                    {config.title}
-                  </div>
-                }
-                extra={
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={item.visible ? <EyeOutlined /> : <EyeInvisibleOutlined />}
-                    onClick={() => toggleVisibility(item.id)}
-                  />
-                }
-              >
-                {config.render()}
-              </Card>
-            </div>
-          );
-        })}
-      </div>
+        {/* 周期盈亏和资产分布 - 各占一半 */}
+        <Col xs={24} lg={12}>
+          {widgetConfig.periodPnl?.render()}
+        </Col>
+        <Col xs={24} lg={12}>
+          {widgetConfig.assetDistribution?.render()}
+        </Col>
+
+        {/* 服务器状态、策略状态、进程状态 - 各占三分之一 */}
+        <Col xs={24} sm={8}>
+          {widgetConfig.hostsStatus?.render()}
+        </Col>
+        <Col xs={24} sm={8}>
+          {widgetConfig.healthStatus?.render()}
+        </Col>
+        <Col xs={24} sm={8}>
+          {widgetConfig.processStatus?.render()}
+        </Col>
+      </Row>
     </div>
   );
 }

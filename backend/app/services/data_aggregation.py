@@ -8,12 +8,12 @@ from app.core.redis_client import redis_get, redis_set
 from app.utils.logger import logger
 
 RESAMPLE_RULES = {
-    "30d": "1H",
-    "60d": "2H",
-    "90d": "3H",
-    "120d": "4H",
-    "180d": "6H",
-    "1y": "12H",
+    "30d": "1h",
+    "60d": "2h",
+    "90d": "3h",
+    "120d": "4h",
+    "180d": "6h",
+    "1y": "12h",
     "2y": "1D",
     "3y": "1D",
     "5y": "1W",
@@ -272,7 +272,7 @@ async def get_equity_curve(email: str, strategy_id: Optional[int] = None, time_r
                 return []
             df["time"] = pd.to_datetime(df["time"])
             df = df.set_index("time").sort_index()
-            resample_rule = RESAMPLE_RULES.get(time_range, "1H")
+            resample_rule = RESAMPLE_RULES.get(time_range, "1h")
             df_resampled = df.resample(resample_rule).agg({
                 "net_realized": "last",
                 "net_unrealized": "last",
@@ -559,207 +559,301 @@ async def get_asset_overview() -> Dict[str, Any]:
         raise
 
 async def get_period_pnl(period: str = "day", limit: int = 30) -> List[Dict[str, Any]]:
-    """获取周期盈亏统计 - 优化版本
+    """获取周期盈亏统计 - 高性能优化版本
     period: day/week/month
     limit: 最多返回的周期数
     """
     try:
         cache_key = f"period_pnl:{period}:{limit}"
         
-        # 尝试从缓存获取（缓存2分钟）
+        # 尝试从缓存获取（缓存5分钟，因为数据更新频率不高）
         cached = await redis_get(cache_key)
         if cached:
             return cached
         
-        # 使用更高效的聚合查询，直接聚合所有账户
+        # 计算时间范围：只查询最近的数据，减少扫描量
+        time_threshold = None
         if period == "day":
-            # 按天统计 - 使用聚合函数直接获取每天的第一条和最后一条记录
-            sql = """
-                SELECT 
-                    DATE(time) as period_date,
-                    SUM(net_unrealized) as total_unrealized,
-                    MAX(net_unrealized) as max_unrealized,
-                    MIN(net_unrealized) as min_unrealized,
-                    (SELECT net_unrealized FROM equity e2 
-                     WHERE DATE(e2.time) = DATE(e.time) 
-                     AND e2.email = e.email
-                     ORDER BY e2.time DESC LIMIT 1) as end_unrealized,
-                    (SELECT net_unrealized FROM equity e3 
-                     WHERE DATE(e3.time) = DATE(e.time) 
-                     AND e3.email = e.email
-                     ORDER BY e3.time ASC LIMIT 1) as start_unrealized
-                FROM equity e
-                WHERE email IS NOT NULL
-                GROUP BY DATE(time), email
-                ORDER BY period_date DESC
-                LIMIT %s
-            """
+            # 查询最近 limit + 5 天的数据（留有余量）
+            time_threshold = (datetime.now() - timedelta(days=limit + 5)).strftime('%Y-%m-%d')
         elif period == "week":
-            # 按周统计
-            sql = """
-                SELECT 
-                    YEARWEEK(time, 1) as period_week,
-                    email,
-                    (SELECT net_unrealized FROM equity e2 
-                     WHERE YEARWEEK(e2.time, 1) = YEARWEEK(e.time, 1) 
-                     AND e2.email = e.email
-                     ORDER BY e2.time DESC LIMIT 1) as end_unrealized,
-                    (SELECT net_unrealized FROM equity e3 
-                     WHERE YEARWEEK(e3.time, 1) = YEARWEEK(e.time, 1) 
-                     AND e3.email = e.email
-                     ORDER BY e3.time ASC LIMIT 1) as start_unrealized
-                FROM equity e
-                WHERE email IS NOT NULL
-                GROUP BY YEARWEEK(time, 1), email
-                ORDER BY period_week DESC
-                LIMIT %s
-            """
+            # 查询最近 limit + 2 周的数据
+            time_threshold = (datetime.now() - timedelta(weeks=limit + 2)).strftime('%Y-%m-%d')
         else:  # month
-            # 按月统计
-            sql = """
-                SELECT 
-                    DATE_FORMAT(time, '%%Y-%%m') as period_month,
-                    email,
-                    (SELECT net_unrealized FROM equity e2 
-                     WHERE DATE_FORMAT(e2.time, '%%Y-%%m') = DATE_FORMAT(e.time, '%%Y-%%m') 
-                     AND e2.email = e.email
-                     ORDER BY e2.time DESC LIMIT 1) as end_unrealized,
-                    (SELECT net_unrealized FROM equity e3 
-                     WHERE DATE_FORMAT(e3.time, '%%Y-%%m') = DATE_FORMAT(e.time, '%%Y-%%m') 
-                     AND e3.email = e.email
-                     ORDER BY e3.time ASC LIMIT 1) as start_unrealized
-                FROM equity e
-                WHERE email IS NOT NULL
-                GROUP BY DATE_FORMAT(time, '%%Y-%%m'), email
-                ORDER BY period_month DESC
-                LIMIT %s
-            """
+            # 查询最近 limit + 2 个月的数据
+            time_threshold = (datetime.now() - timedelta(days=(limit + 2) * 30)).strftime('%Y-%m-%d')
         
-        # 使用更简单高效的方式：先获取每个周期的开始和结束值
+        # 使用单次高效聚合查询，避免循环查询
+        # 使用窗口函数获取每个周期每个账户的第一条和最后一条记录
         if period == "day":
             sql = """
-                SELECT 
-                    DATE(time) as period_date,
-                    MAX(CASE WHEN rn_desc = 1 THEN net_unrealized END) as end_unrealized,
-                    MAX(CASE WHEN rn_asc = 1 THEN net_unrealized END) as start_unrealized
-                FROM (
+                WITH ranked_equity AS (
                     SELECT 
-                        time,
                         DATE(time) as period_date,
+                        email,
                         net_unrealized,
-                        ROW_NUMBER() OVER (PARTITION BY DATE(time), email ORDER BY time DESC) as rn_desc,
-                        ROW_NUMBER() OVER (PARTITION BY DATE(time), email ORDER BY time ASC) as rn_asc
+                        ROW_NUMBER() OVER (PARTITION BY DATE(time), email ORDER BY time ASC) as rn_first,
+                        ROW_NUMBER() OVER (PARTITION BY DATE(time), email ORDER BY time DESC) as rn_last
                     FROM equity
-                    WHERE email IS NOT NULL
-                ) t
-                WHERE rn_desc = 1 OR rn_asc = 1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                ),
+                period_agg AS (
+                    SELECT 
+                        period_date,
+                        email,
+                        MAX(CASE WHEN rn_first = 1 THEN net_unrealized END) as start_unrealized,
+                        MAX(CASE WHEN rn_last = 1 THEN net_unrealized END) as end_unrealized
+                    FROM ranked_equity
+                    WHERE rn_first = 1 OR rn_last = 1
+                    GROUP BY period_date, email
+                )
+                SELECT 
+                    period_date,
+                    SUM(end_unrealized - start_unrealized) as total_pnl,
+                    MAX(end_unrealized) as max_unrealized,
+                    MIN(start_unrealized) as min_unrealized
+                FROM period_agg
+                WHERE start_unrealized IS NOT NULL AND end_unrealized IS NOT NULL
                 GROUP BY period_date
                 ORDER BY period_date DESC
                 LIMIT %s
             """
         elif period == "week":
             sql = """
-                SELECT 
-                    YEARWEEK(time, 1) as period_week,
-                    MAX(CASE WHEN rn_desc = 1 THEN net_unrealized END) as end_unrealized,
-                    MAX(CASE WHEN rn_asc = 1 THEN net_unrealized END) as start_unrealized
-                FROM (
+                WITH ranked_equity AS (
                     SELECT 
-                        time,
                         YEARWEEK(time, 1) as period_week,
+                        email,
                         net_unrealized,
-                        ROW_NUMBER() OVER (PARTITION BY YEARWEEK(time, 1), email ORDER BY time DESC) as rn_desc,
-                        ROW_NUMBER() OVER (PARTITION BY YEARWEEK(time, 1), email ORDER BY time ASC) as rn_asc
+                        ROW_NUMBER() OVER (PARTITION BY YEARWEEK(time, 1), email ORDER BY time ASC) as rn_first,
+                        ROW_NUMBER() OVER (PARTITION BY YEARWEEK(time, 1), email ORDER BY time DESC) as rn_last
                     FROM equity
-                    WHERE email IS NOT NULL
-                ) t
-                WHERE rn_desc = 1 OR rn_asc = 1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                ),
+                period_agg AS (
+                    SELECT 
+                        period_week,
+                        email,
+                        MAX(CASE WHEN rn_first = 1 THEN net_unrealized END) as start_unrealized,
+                        MAX(CASE WHEN rn_last = 1 THEN net_unrealized END) as end_unrealized
+                    FROM ranked_equity
+                    WHERE rn_first = 1 OR rn_last = 1
+                    GROUP BY period_week, email
+                )
+                SELECT 
+                    period_week,
+                    SUM(end_unrealized - start_unrealized) as total_pnl,
+                    MAX(end_unrealized) as max_unrealized,
+                    MIN(start_unrealized) as min_unrealized
+                FROM period_agg
+                WHERE start_unrealized IS NOT NULL AND end_unrealized IS NOT NULL
                 GROUP BY period_week
                 ORDER BY period_week DESC
                 LIMIT %s
             """
         else:  # month
             sql = """
-                SELECT 
-                    DATE_FORMAT(time, '%%Y-%%m') as period_month,
-                    MAX(CASE WHEN rn_desc = 1 THEN net_unrealized END) as end_unrealized,
-                    MAX(CASE WHEN rn_asc = 1 THEN net_unrealized END) as start_unrealized
-                FROM (
+                WITH ranked_equity AS (
                     SELECT 
-                        time,
                         DATE_FORMAT(time, '%%Y-%%m') as period_month,
+                        email,
                         net_unrealized,
-                        ROW_NUMBER() OVER (PARTITION BY DATE_FORMAT(time, '%%Y-%%m'), email ORDER BY time DESC) as rn_desc,
-                        ROW_NUMBER() OVER (PARTITION BY DATE_FORMAT(time, '%%Y-%%m'), email ORDER BY time ASC) as rn_asc
+                        ROW_NUMBER() OVER (PARTITION BY DATE_FORMAT(time, '%%Y-%%m'), email ORDER BY time ASC) as rn_first,
+                        ROW_NUMBER() OVER (PARTITION BY DATE_FORMAT(time, '%%Y-%%m'), email ORDER BY time DESC) as rn_last
                     FROM equity
-                    WHERE email IS NOT NULL
-                ) t
-                WHERE rn_desc = 1 OR rn_asc = 1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                ),
+                period_agg AS (
+                    SELECT 
+                        period_month,
+                        email,
+                        MAX(CASE WHEN rn_first = 1 THEN net_unrealized END) as start_unrealized,
+                        MAX(CASE WHEN rn_last = 1 THEN net_unrealized END) as end_unrealized
+                    FROM ranked_equity
+                    WHERE rn_first = 1 OR rn_last = 1
+                    GROUP BY period_month, email
+                )
+                SELECT 
+                    period_month,
+                    SUM(end_unrealized - start_unrealized) as total_pnl,
+                    MAX(end_unrealized) as max_unrealized,
+                    MIN(start_unrealized) as min_unrealized
+                FROM period_agg
+                WHERE start_unrealized IS NOT NULL AND end_unrealized IS NOT NULL
                 GROUP BY period_month
                 ORDER BY period_month DESC
                 LIMIT %s
             """
         
-        # 如果MySQL版本不支持窗口函数，使用更简单的方式
-        # 先获取所有账户，然后对每个账户分别查询，但使用更高效的查询
-        accounts = execute_query("SELECT DISTINCT email FROM equity WHERE email IS NOT NULL LIMIT 100")
-        
-        period_map = {}
-        
-        for account in accounts:
-            email = account["email"]
+        try:
+            # 尝试使用窗口函数（MySQL 8.0+）
+            result = execute_query(sql, (time_threshold, limit))
             
-            if period == "day":
-                # 按天统计 - 使用更简单的查询
-                sql = """
-                    SELECT 
-                        DATE(time) as period_date,
-                        MAX(net_unrealized) as max_unrealized,
-                        MIN(net_unrealized) as min_unrealized,
-                        SUBSTRING_INDEX(GROUP_CONCAT(net_unrealized ORDER BY time DESC), ',', 1) as end_unrealized,
-                        SUBSTRING_INDEX(GROUP_CONCAT(net_unrealized ORDER BY time ASC), ',', 1) as start_unrealized
-                    FROM equity
-                    WHERE email = %s
-                    GROUP BY DATE(time)
-                    ORDER BY period_date DESC
-                    LIMIT %s
-                """
-            elif period == "week":
-                sql = """
-                    SELECT 
-                        YEARWEEK(time, 1) as period_week,
-                        MAX(net_unrealized) as max_unrealized,
-                        MIN(net_unrealized) as min_unrealized,
-                        SUBSTRING_INDEX(GROUP_CONCAT(net_unrealized ORDER BY time DESC), ',', 1) as end_unrealized,
-                        SUBSTRING_INDEX(GROUP_CONCAT(net_unrealized ORDER BY time ASC), ',', 1) as start_unrealized
-                    FROM equity
-                    WHERE email = %s
-                    GROUP BY YEARWEEK(time, 1)
-                    ORDER BY period_week DESC
-                    LIMIT %s
-                """
-            else:  # month
-                sql = """
-                    SELECT 
-                        DATE_FORMAT(time, '%%Y-%%m') as period_month,
-                        MAX(net_unrealized) as max_unrealized,
-                        MIN(net_unrealized) as min_unrealized,
-                        SUBSTRING_INDEX(GROUP_CONCAT(net_unrealized ORDER BY time DESC), ',', 1) as end_unrealized,
-                        SUBSTRING_INDEX(GROUP_CONCAT(net_unrealized ORDER BY time ASC), ',', 1) as start_unrealized
-                    FROM equity
-                    WHERE email = %s
-                    GROUP BY DATE_FORMAT(time, '%%Y-%%m')
-                    ORDER BY period_month DESC
-                    LIMIT %s
-                """
-            
-            result = execute_query(sql, (email, limit))
-            
+            pnl_list = []
             for r in result:
                 period_key = str(r.get("period_date") or r.get("period_week") or r.get("period_month"))
-                end_unrealized = float(r.get("end_unrealized") or 0)
-                start_unrealized = float(r.get("start_unrealized") or 0)
-                pnl = end_unrealized - start_unrealized
+                pnl_list.append({
+                    "period": period_key,
+                    "pnl": float(r.get("total_pnl") or 0),
+                    "maxUnrealized": float(r.get("max_unrealized") or 0),
+                    "minUnrealized": float(r.get("min_unrealized") or 0),
+                })
+            
+            # 缓存结果5分钟
+            await redis_set(cache_key, pnl_list, ttl=300)
+            return pnl_list
+            
+        except Exception as window_func_error:
+            # 如果窗口函数不支持（MySQL < 8.0），使用更简单的备用方案
+            logger.warning(f"窗口函数不支持，使用备用查询方案: {window_func_error}")
+            
+            # 备用方案：分两步查询，更高效
+            # 第一步：获取每个周期每个账户的第一条和最后一条记录
+            if period == "day":
+                # 获取每天每个账户的第一个值
+                sql_start = """
+                    SELECT DATE(time) as period_date, email, net_unrealized
+                    FROM equity e1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                      AND time = (
+                          SELECT MIN(time) FROM equity e2 
+                          WHERE DATE(e2.time) = DATE(e1.time) 
+                            AND e2.email = e1.email
+                            AND e2.time >= %s
+                      )
+                """
+                # 获取每天每个账户的最后一个值
+                sql_end = """
+                    SELECT DATE(time) as period_date, email, net_unrealized
+                    FROM equity e1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                      AND time = (
+                          SELECT MAX(time) FROM equity e2 
+                          WHERE DATE(e2.time) = DATE(e1.time) 
+                            AND e2.email = e1.email
+                            AND e2.time >= %s
+                      )
+                """
+                # 获取每天的最大最小值
+                sql_maxmin = """
+                    SELECT 
+                        DATE(time) as period_date,
+                        email,
+                        MAX(net_unrealized) as max_unrealized,
+                        MIN(net_unrealized) as min_unrealized
+                    FROM equity
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                    GROUP BY DATE(time), email
+                """
+            elif period == "week":
+                sql_start = """
+                    SELECT YEARWEEK(time, 1) as period_week, email, net_unrealized
+                    FROM equity e1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                      AND time = (
+                          SELECT MIN(time) FROM equity e2 
+                          WHERE YEARWEEK(e2.time, 1) = YEARWEEK(e1.time, 1) 
+                            AND e2.email = e1.email
+                            AND e2.time >= %s
+                      )
+                """
+                sql_end = """
+                    SELECT YEARWEEK(time, 1) as period_week, email, net_unrealized
+                    FROM equity e1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                      AND time = (
+                          SELECT MAX(time) FROM equity e2 
+                          WHERE YEARWEEK(e2.time, 1) = YEARWEEK(e1.time, 1) 
+                            AND e2.email = e1.email
+                            AND e2.time >= %s
+                      )
+                """
+                sql_maxmin = """
+                    SELECT 
+                        YEARWEEK(time, 1) as period_week,
+                        email,
+                        MAX(net_unrealized) as max_unrealized,
+                        MIN(net_unrealized) as min_unrealized
+                    FROM equity
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                    GROUP BY YEARWEEK(time, 1), email
+                """
+            else:  # month
+                sql_start = """
+                    SELECT DATE_FORMAT(time, '%%Y-%%m') as period_month, email, net_unrealized
+                    FROM equity e1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                      AND time = (
+                          SELECT MIN(time) FROM equity e2 
+                          WHERE DATE_FORMAT(e2.time, '%%Y-%%m') = DATE_FORMAT(e1.time, '%%Y-%%m') 
+                            AND e2.email = e1.email
+                            AND e2.time >= %s
+                      )
+                """
+                sql_end = """
+                    SELECT DATE_FORMAT(time, '%%Y-%%m') as period_month, email, net_unrealized
+                    FROM equity e1
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                      AND time = (
+                          SELECT MAX(time) FROM equity e2 
+                          WHERE DATE_FORMAT(e2.time, '%%Y-%%m') = DATE_FORMAT(e1.time, '%%Y-%%m') 
+                            AND e2.email = e1.email
+                            AND e2.time >= %s
+                      )
+                """
+                sql_maxmin = """
+                    SELECT 
+                        DATE_FORMAT(time, '%%Y-%%m') as period_month,
+                        email,
+                        MAX(net_unrealized) as max_unrealized,
+                        MIN(net_unrealized) as min_unrealized
+                    FROM equity
+                    WHERE email IS NOT NULL 
+                      AND time >= %s
+                      AND net_unrealized IS NOT NULL
+                    GROUP BY DATE_FORMAT(time, '%%Y-%%m'), email
+                """
+            
+            # 执行三个查询
+            starts = {(r.get("period_date") or r.get("period_week") or r.get("period_month"), r["email"]): float(r["net_unrealized"]) 
+                     for r in execute_query(sql_start, (time_threshold, time_threshold))}
+            ends = {(r.get("period_date") or r.get("period_week") or r.get("period_month"), r["email"]): float(r["net_unrealized"]) 
+                   for r in execute_query(sql_end, (time_threshold, time_threshold))}
+            maxmins = execute_query(sql_maxmin, (time_threshold,))
+            
+            # 按周期聚合所有账户的数据
+            period_map = {}
+            for r in maxmins:
+                period_key = str(r.get("period_date") or r.get("period_week") or r.get("period_month"))
+                email = r["email"]
+                
+                start_key = (period_key, email)
+                end_key = (period_key, email)
+                start_val = starts.get(start_key, 0)
+                end_val = ends.get(end_key, 0)
+                pnl = end_val - start_val if start_val > 0 and end_val > 0 else 0
                 
                 if period_key not in period_map:
                     period_map[period_key] = {
@@ -769,7 +863,6 @@ async def get_period_pnl(period: str = "day", limit: int = 30) -> List[Dict[str,
                         "minUnrealized": float(r.get("min_unrealized") or 0),
                     }
                 else:
-                    # 合并同一周期的数据（多个账户）
                     period_map[period_key]["pnl"] += pnl
                     period_map[period_key]["maxUnrealized"] = max(
                         period_map[period_key]["maxUnrealized"], 
@@ -779,11 +872,16 @@ async def get_period_pnl(period: str = "day", limit: int = 30) -> List[Dict[str,
                         period_map[period_key]["minUnrealized"], 
                         float(r.get("min_unrealized") or 0)
                     )
-        
-        # 转换为列表并排序
-        all_pnl = list(period_map.values())
-        all_pnl.sort(key=lambda x: x["period"], reverse=True)
-        return all_pnl[:limit]
+            
+            # 转换为列表并排序，只返回limit条
+            pnl_list = list(period_map.values())
+            pnl_list.sort(key=lambda x: x["period"], reverse=True)
+            pnl_list = pnl_list[:limit]
+            
+            # 缓存结果5分钟
+            await redis_set(cache_key, pnl_list, ttl=300)
+            return pnl_list
+            
     except Exception as e:
         logger.error(f"获取周期盈亏失败: {e}")
         raise
@@ -886,7 +984,7 @@ async def get_equity_curve_with_drawdown(time_range: str = "30d") -> List[Dict[s
                 return []
             df["time"] = pd.to_datetime(df["time"])
             df = df.set_index("time").sort_index()
-            resample_rule = RESAMPLE_RULES.get(time_range, "1H")
+            resample_rule = RESAMPLE_RULES.get(time_range, "1h")
             df_resampled = df.resample(resample_rule).agg({
                 "net_realized": "last",
                 "net_unrealized": "last",
