@@ -298,10 +298,15 @@ function AdminStrategies() {
   ];
 
   // 根据visibleColumns过滤显示的列
-  const columns = allColumns.filter(col => {
-    if (col.key === 'action') return true; // 操作列始终显示
-    return visibleColumns[col.key] !== false;
-  });
+  const columns = allColumns
+    .filter(col => {
+      if (col.key === 'action') return true; // 操作列始终显示
+      return visibleColumns[col.key] !== false;
+    })
+    .map(col => ({
+      ...col,
+      title: typeof col.title === 'string' ? <span style={{ fontWeight: 600, color: '#0f172a' }}>{col.title}</span> : col.title,
+    }));
 
   // 列设置菜单
   const columnMenuItems = allColumns
@@ -325,13 +330,60 @@ function AdminStrategies() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ margin: 0 }}>策略管理</h1>
+      <style>{`
+        .admin-strategies-table .ant-table-thead > tr > th {
+          background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%) !important;
+          border-bottom: 2px solid #cbd5e1 !important;
+          font-weight: 600 !important;
+          color: #0f172a !important;
+          padding: 12px 16px !important;
+          font-size: 13px !important;
+        }
+        .admin-strategies-table .ant-table-tbody > tr > td {
+          padding: 12px 16px !important;
+          border-bottom: 1px solid #e2e8f0 !important;
+          transition: all 0.2s ease !important;
+        }
+        .admin-strategies-table .ant-table-tbody > tr:nth-child(even) {
+          background: #ffffff !important;
+        }
+        .admin-strategies-table .ant-table-tbody > tr:nth-child(odd) {
+          background: #f8fafc !important;
+        }
+        .admin-strategies-table .ant-table-tbody > tr:hover {
+          background: #e0f2fe !important;
+          transform: scale(1.01);
+          box-shadow: 0 2px 8px rgba(29, 155, 240, 0.15);
+        }
+      `}</style>
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        marginBottom: 24,
+        padding: '16px 24px',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        borderRadius: 12,
+      }}>
+        <h1 style={{ 
+          margin: 0,
+          color: '#fff',
+          fontSize: 24,
+          fontWeight: 700,
+        }}>
+          策略管理
+        </h1>
         <Space>
           <Button
             icon={<ReloadOutlined />}
             onClick={fetchStrategies}
             loading={loading}
+            style={{
+              background: 'rgba(255, 255, 255, 0.2)',
+              border: '1px solid rgba(255, 255, 255, 0.3)',
+              color: '#fff',
+              fontWeight: 600,
+            }}
           >
             刷新
           </Button>
@@ -340,7 +392,15 @@ function AdminStrategies() {
             trigger={['click']}
             placement="bottomRight"
           >
-            <Button icon={<SettingOutlined />}>
+            <Button 
+              icon={<SettingOutlined />}
+              style={{
+                background: 'rgba(255, 255, 255, 0.2)',
+                border: '1px solid rgba(255, 255, 255, 0.3)',
+                color: '#fff',
+                fontWeight: 600,
+              }}
+            >
               列设置
             </Button>
           </Dropdown>
@@ -348,6 +408,12 @@ function AdminStrategies() {
             type="primary"
             icon={<PlusOutlined />}
             onClick={handleAdd}
+            style={{
+              background: 'rgba(255, 255, 255, 0.2)',
+              border: '1px solid rgba(255, 255, 255, 0.3)',
+              color: '#fff',
+              fontWeight: 600,
+            }}
           >
             新增策略
           </Button>
@@ -355,6 +421,11 @@ function AdminStrategies() {
       </div>
 
       <Table
+        className="admin-strategies-table"
+        style={{
+          borderRadius: 8,
+          overflow: 'hidden',
+        }}
         columns={columns}
         dataSource={strategies}
         rowKey="id"

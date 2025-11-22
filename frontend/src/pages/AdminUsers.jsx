@@ -40,10 +40,13 @@ function AdminUsers() {
 
   const handleEdit = (user) => {
     setEditingUser(user);
+    // 将数据库返回的 0/1 转换为表单需要的格式
+    // 如果 isActive 是布尔值，直接使用；如果是 0/1，转换为布尔值
+    const isActiveValue = typeof user.isActive === 'boolean' ? user.isActive : Boolean(user.isActive);
     form.setFieldsValue({
       nickname: user.nickname,
       role: user.role,
-      isActive: user.isActive,
+      isActive: isActiveValue,
     });
     setModalVisible(true);
   };
@@ -51,12 +54,22 @@ function AdminUsers() {
   const handleUpdate = async () => {
     try {
       const values = await form.validateFields();
-      await api.put(`/admin/users/${editingUser.id}`, values);
+      // 将前端字段名转换为后端API期望的格式
+      const payload = {
+        nickname: values.nickname,
+        role: values.role,
+        is_active: values.isActive, // 转换为snake_case
+      };
+      await api.put(`/admin/users/${editingUser.id}`, payload);
       message.success('更新成功');
       setModalVisible(false);
+      setEditingUser(null);
+      form.resetFields();
       fetchUsers();
     } catch (error) {
-      message.error('更新失败');
+      console.error('更新用户失败:', error);
+      const errorMessage = error.response?.data?.detail || error.message || '更新失败';
+      message.error(errorMessage);
     }
   };
 
@@ -105,9 +118,66 @@ function AdminUsers() {
 
   return (
     <div>
-      <h1 style={{ marginBottom: 24 }}>用户管理</h1>
+      <style>{`
+        .admin-users-table .ant-table-thead > tr > th {
+          background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%) !important;
+          border-bottom: 2px solid #cbd5e1 !important;
+          font-weight: 600 !important;
+          color: #0f172a !important;
+          padding: 12px 16px !important;
+          font-size: 13px !important;
+        }
+        .admin-users-table .ant-table-tbody > tr > td {
+          padding: 12px 16px !important;
+          border-bottom: 1px solid #e2e8f0 !important;
+          transition: all 0.2s ease !important;
+        }
+        .admin-users-table .ant-table-tbody > tr:nth-child(even) {
+          background: #ffffff !important;
+        }
+        .admin-users-table .ant-table-tbody > tr:nth-child(odd) {
+          background: #f8fafc !important;
+        }
+        .admin-users-table .ant-table-tbody > tr:hover {
+          background: #e0f2fe !important;
+          transform: scale(1.01);
+          box-shadow: 0 2px 8px rgba(29, 155, 240, 0.15);
+        }
+      `}</style>
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        marginBottom: 24,
+        padding: '16px 24px',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        borderRadius: 12,
+      }}>
+        <h1 style={{ 
+          margin: 0,
+          color: '#fff',
+          fontSize: 24,
+          fontWeight: 700,
+        }}>
+          用户管理
+        </h1>
+      </div>
       <Table
-        columns={columns}
+        className="admin-users-table"
+        style={{
+          borderRadius: 8,
+          overflow: 'hidden',
+        }}
+        columns={columns.map(col => {
+          const baseCol = {
+            ...col,
+            title: typeof col.title === 'string' ? <span style={{ fontWeight: 600, color: '#0f172a' }}>{col.title}</span> : col.title,
+          };
+          if (!col.render) {
+            baseCol.render = (text) => text ? <span style={{ fontWeight: 500, color: '#334155' }}>{text}</span> : '-';
+          }
+          return baseCol;
+        })}
         dataSource={users}
         rowKey="id"
         loading={loading}
@@ -142,7 +212,7 @@ function AdminUsers() {
             </Select>
           </Form.Item>
           <Form.Item name="isActive" label="状态">
-            <Select>
+            <Select placeholder="请选择状态">
               <Select.Option value={true}>激活</Select.Option>
               <Select.Option value={false}>未激活</Select.Option>
             </Select>

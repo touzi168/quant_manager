@@ -98,55 +98,114 @@ function Layout({ children }) {
         collapsed={collapsed}
         onCollapse={setCollapsed}
         theme="dark"
+        style={{
+          background: '#0f172a',
+        }}
       >
         <div
           style={{
-            height: 32,
+            height: 52,
             margin: 16,
-            background: 'rgba(255, 255, 255, 0.3)',
-            borderRadius: 4,
+            background: 'rgba(255, 255, 255, 0.1)',
+            borderRadius: 12,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: 'white',
-            fontWeight: 'bold',
+            color: '#ffffff',
+            fontWeight: 700,
+            fontSize: collapsed ? 14 : 16,
+            letterSpacing: '0.08em',
+            transition: 'all 0.3s ease',
           }}
         >
           {collapsed ? '量化' : '量化监控系统'}
         </div>
+        <style>{`
+          .ant-layout-sider {
+            background: #0f172a !important;
+          }
+          .ant-layout-sider .ant-menu {
+            background: transparent !important;
+            border-right: none !important;
+          }
+          .ant-layout-sider .ant-menu-item {
+            color: #ffffff !important;
+            font-weight: 500 !important;
+            font-size: 14px !important;
+            box-shadow: none !important;
+          }
+          .ant-layout-sider .ant-menu-item:hover {
+            background: rgba(255, 255, 255, 0.12) !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+          }
+          .ant-layout-sider .ant-menu-item-selected {
+            background: rgba(29, 155, 240, 0.2) !important;
+            color: #ffffff !important;
+            font-weight: 600 !important;
+            border-right: none !important;
+            box-shadow: none !important;
+          }
+          .ant-layout-sider .ant-menu-item::after {
+            display: none !important;
+          }
+          .ant-layout-sider .ant-menu-item-icon {
+            color: #ffffff !important;
+            font-size: 16px !important;
+          }
+          .ant-layout-sider .ant-menu-item-selected .ant-menu-item-icon {
+            color: #ffffff !important;
+          }
+          .ant-layout-sider .ant-layout-sider-trigger {
+            background: rgba(255, 255, 255, 0.08) !important;
+            color: #ffffff !important;
+            border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+          }
+          .ant-layout-sider .ant-layout-sider-trigger:hover {
+            background: rgba(255, 255, 255, 0.15) !important;
+            color: #ffffff !important;
+          }
+        `}</style>
         <Menu
           theme="dark"
           selectedKeys={[location.pathname]}
           mode="inline"
           items={menuItems}
           onClick={handleMenuClick}
+          style={{
+            background: 'transparent',
+            borderRight: 'none',
+          }}
         />
       </Sider>
       <AntLayout>
         <Header
           style={{
             padding: '0 24px',
-            background: '#fff',
+            background: 'rgba(255, 255, 255, 0.9)',
+            backdropFilter: 'blur(20px)',
+            borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
+            boxShadow: '0 2px 8px rgba(15, 23, 42, 0.05)',
           }}
         >
-          <div style={{ fontSize: 18, fontWeight: 'bold' }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
             量化监控系统
           </div>
           <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
             <Space style={{ cursor: 'pointer' }}>
               <Avatar icon={<UserOutlined />} />
-              <span>{user?.email}</span>
+              <span style={{ color: '#334155', fontWeight: 500 }}>{user?.email}</span>
             </Space>
           </Dropdown>
         </Header>
         <Content
           style={{
             margin: '24px',
-            padding: 24,
-            background: '#fff',
+            padding: 0,
+            background: 'transparent',
             minHeight: 280,
           }}
         >
